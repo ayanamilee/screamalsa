@@ -347,8 +347,11 @@ static void scream_reconnect_work(struct work_struct *work)
                 pr_warn(DRIVER_NAME ": Failed to set TCP_USER_TIMEOUT: %d\n", ret);
         }
         /* Start non-blocking connect and keep socket for polling */
-        ret = kernel_connect(dev->sock, (struct sockaddr *)&dev->remote_addr,
-                             sizeof(dev->remote_addr), O_NONBLOCK);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
+	ret = kernel_connect(dev->sock, (struct sockaddr_unsized *)&dev->remote_addr, sizeof(dev->remote_addr), O_NONBLOCK);
+#else
+	ret = kernel_connect(dev->sock, (struct sockaddr *)&dev->remote_addr, sizeof(dev->remote_addr), O_NONBLOCK);
+#endif
         if (ret == 0) {
             /* Connected immediately */
             set_sock_timeouts(dev->sock, 5000);
