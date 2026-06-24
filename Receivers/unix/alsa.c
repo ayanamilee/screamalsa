@@ -135,10 +135,9 @@ int alsa_output_send(receiver_data_t *data)
         break;
       case 32: format = SND_PCM_FORMAT_S32_LE; ao_data.bytes_per_sample = 4; break;
       case 1:
-        /* DSD marker (byte[1]==1); Unix receiver has no DSD playback path yet */
-        if (verbosity > 0)
-          fprintf(stderr, "DSD stream detected (sample_size=1); Unix ALSA output is not supported.\n");
-        ao_data.rate = 0;
+        format = SND_PCM_FORMAT_DSD_U32_BE;
+        ao_data.bytes_per_sample = 4;
+        ao_data.rate *= 2;   /* driver encodes half the DSD rate in byte[0] */
         break;
       default:
         if (verbosity > 0)
@@ -217,6 +216,7 @@ int alsa_output_send(receiver_data_t *data)
         if (verbosity > 0)
           fprintf(stderr, "Switched format to sample rate %u, sample size %hhu (%s), %u channels.\n",
                   ao_data.rate, rf->sample_size,
+                  (rf->sample_size == 1) ? "DSD_U32_BE" :
                   (rf->sample_size == 24) ? (rf->wire_layout ? "S24_LE" : "S24_3LE") : "PCM",
                   rf->channels);
       }

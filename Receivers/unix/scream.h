@@ -27,6 +27,7 @@ typedef struct receiver_format {
 static inline unsigned int scream_bytes_per_sample(const receiver_format_t *rf)
 {
   switch (rf->sample_size) {
+  case 1:  return 4;   /* DSD_U32_BE; wire_layout ignored */
   case 16: return 2;
   case 24: return (rf->wire_layout == SCREAM_WIRE_S24_LE) ? 4 : 3;
   case 32: return 4;
