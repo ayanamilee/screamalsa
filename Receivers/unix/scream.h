@@ -11,6 +11,11 @@ enum output_type {
   Raw, Alsa, Pulseaudio, Jack, Sndio
 };
 
+enum scream_wire_layout {
+  SCREAM_WIRE_PACKED = 0,   /* S24_3LE: 3 bytes per sample on the wire */
+  SCREAM_WIRE_S24_LE = 1,   /* S24_LE: 24-bit samples in 32-bit LE containers */
+};
+
 typedef struct receiver_format {
   unsigned char sample_rate;
   unsigned char sample_size;
@@ -23,7 +28,7 @@ static inline unsigned int scream_bytes_per_sample(const receiver_format_t *rf)
 {
   switch (rf->sample_size) {
   case 16: return 2;
-  case 24: return rf->wire_layout ? 4 : 3;
+  case 24: return (rf->wire_layout == SCREAM_WIRE_S24_LE) ? 4 : 3;
   case 32: return 4;
   default: return 0;
   }

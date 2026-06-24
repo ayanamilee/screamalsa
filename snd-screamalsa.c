@@ -186,12 +186,14 @@ static u8 scream_pcm_wire_bits(snd_pcm_format_t format)
     }
 }
 
-/* byte[5]: 0 = packed PCM, 1 = 24-bit in 32-bit LE containers (S24_LE) */
+#define SCREAM_WIRE_PACKED  0U
+#define SCREAM_WIRE_S24_LE  1U
+
 static u8 scream_pcm_wire_layout(snd_pcm_format_t format)
 {
     if (format == SNDRV_PCM_FORMAT_S24_LE)
-        return 1;
-    return 0;
+        return SCREAM_WIRE_S24_LE;
+    return SCREAM_WIRE_PACKED;
 }
 
 static void convert_data(char*src, int frames)

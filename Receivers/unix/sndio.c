@@ -33,7 +33,7 @@ int sndio_output_send(receiver_data_t *data)
     sio_initpar(&p);
     p.bits = rf->sample_size;
     if (rf->sample_size == 24)
-      p.bps = rf->wire_layout ? 4 : 3;
+      p.bps = (rf->wire_layout == SCREAM_WIRE_S24_LE) ? 4 : 3;
     else
       p.bps = SIO_BPS(p.bits);
     p.sig = p.bits > 8;

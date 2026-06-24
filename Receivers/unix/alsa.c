@@ -125,7 +125,7 @@ int alsa_output_send(receiver_data_t *data)
     switch (rf->sample_size) {
       case 16: format = SND_PCM_FORMAT_S16_LE; ao_data.bytes_per_sample = 2; break;
       case 24:
-        if (rf->wire_layout == 1) {
+        if (rf->wire_layout == SCREAM_WIRE_S24_LE) {
           format = SND_PCM_FORMAT_S24_LE;
           ao_data.bytes_per_sample = 4;
         } else {
@@ -134,6 +134,12 @@ int alsa_output_send(receiver_data_t *data)
         }
         break;
       case 32: format = SND_PCM_FORMAT_S32_LE; ao_data.bytes_per_sample = 4; break;
+      case 1:
+        /* DSD marker (byte[1]==1); Unix receiver has no DSD playback path yet */
+        if (verbosity > 0)
+          fprintf(stderr, "DSD stream detected (sample_size=1); Unix ALSA output is not supported.\n");
+        ao_data.rate = 0;
+        break;
       default:
         if (verbosity > 0)
           fprintf(stderr, "Unsupported sample size %hhu, not playing until next format switch.\n", rf->sample_size);

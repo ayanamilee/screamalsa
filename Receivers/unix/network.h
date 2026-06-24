@@ -13,7 +13,7 @@
 #define DEFAULT_PORT 4010
 
 #define HEADER_SIZE 6
-#define MAX_SO_PACKETSIZE 1152+HEADER_SIZE
+#define MAX_SO_PACKETSIZE (1152 + HEADER_SIZE)
 
 typedef struct rctx_network {
   int sockfd;
