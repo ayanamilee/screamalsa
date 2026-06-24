@@ -7,8 +7,13 @@ Key features
 - Extended Scream protocol with DSD (Direct Stream Digital) support
 - Multi-distro build and install helpers for common Linux distributions
 
-Receivers for various platforms that support the Extended Scream protocol can be taken from the archive at the following link in the receivers folders:
-https://albumplayer.ru/asioscream4.zip
+Receivers
+- Unix/Linux receiver (ALSA, PulseAudio, JACK, etc.) is included in this repository under Receivers/unix/.
+  Build: cd Receivers/unix && mkdir -p build && cd build && cmake .. && make
+  Run with ScreamALSA defaults: ./Receivers/unix/screamalsa.sh -v
+  (UDP unicast, port 4011, ALSA output)
+- Additional receivers for other platforms are available in the archive:
+  https://albumplayer.ru/asioscream4.zip
 
 Scream Scripts - Quick Guide
 

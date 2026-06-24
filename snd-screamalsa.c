@@ -132,6 +132,7 @@ struct snd_scream_device {
 
     unsigned int sample_rate;
     unsigned int channels;
+    unsigned int frame_bytes;   /* bytes per interleaved frame */
     snd_pcm_format_t format;
     bool is_dsd;
 
@@ -148,7 +149,8 @@ struct snd_scream_device {
 static struct snd_pcm_hardware snd_scream_hw = {
     .info = SCREAM_INFO_FLAGS,
     .formats =
-        (SNDRV_PCM_FMTBIT_S32_LE
+        (SNDRV_PCM_FMTBIT_S16_LE
+         | SNDRV_PCM_FMTBIT_S32_LE
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
 #ifdef SNDRV_PCM_FMTBIT_DSD_U32_BE
          | SNDRV_PCM_FMTBIT_DSD_U32_BE
@@ -166,6 +168,18 @@ static struct snd_pcm_hardware snd_scream_hw = {
     .periods_min = 2,
     .periods_max = 1024,
 };
+
+static u8 scream_pcm_wire_bits(snd_pcm_format_t format)
+{
+    switch (format) {
+    case SNDRV_PCM_FORMAT_S16_LE:
+        return 16;
+    case SNDRV_PCM_FORMAT_S32_LE:
+        return 32;
+    default:
+        return 32;
+    }
+}
 
 static void convert_data(char*src, int frames)
 {
@@ -430,7 +444,7 @@ static void scream_build_payload_locked(struct snd_scream_device *dev,
                                         size_t current_hw_ptr,
                                         void *data)
 {
-    size_t buffer_size =runtime->buffer_size*4*dev->channels;
+    size_t buffer_size = runtime->buffer_size * dev->frame_bytes;
     if (current_hw_ptr + SCREAM_PAYLOAD_SIZE > buffer_size) {
         size_t len1 = buffer_size - current_hw_ptr;
         size_t len2 = SCREAM_PAYLOAD_SIZE - len1;
@@ -494,8 +508,8 @@ static int scream_playback_thread(void *data)
         avail_fr = snd_pcm_playback_hw_avail(rt);
         if (avail_fr < 0) avail_fr = 0;
 
-        if (avail_fr * 4 * dev->channels >= SCREAM_PAYLOAD_SIZE) {
-            size_t buf_bytes = rt->buffer_size * 4 * dev->channels;
+        if (avail_fr * dev->frame_bytes >= SCREAM_PAYLOAD_SIZE) {
+            size_t buf_bytes = rt->buffer_size * dev->frame_bytes;
             
             scream_build_payload_locked(dev, rt, dev->hw_ptr,
                                         dev->network_buffer + SCREAM_HEADER_SIZE);
@@ -698,7 +712,7 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
         dev->network_buffer[1] = 1;      /* DSD marker */
     } else {
         srt = dev->sample_rate;
-        dev->network_buffer[1] = 32;     /* 32-bit PCM */
+        dev->network_buffer[1] = scream_pcm_wire_bits(dev->format);
     }
 
     dev->network_buffer[0] = (u8)((srt % 44100) ? (0 + (srt / 48000)) : (128 + (srt / 44100)));
@@ -706,13 +720,17 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
     dev->network_buffer[3] = ch_mask[dev->channels];
     dev->network_buffer[4] = 0;
      {
-         unsigned int frame_bytes = (snd_pcm_format_physical_width(dev->format) / 8) * dev->channels;
+         dev->frame_bytes = (snd_pcm_format_physical_width(dev->format) / 8) * dev->channels;
+         if (!dev->frame_bytes || (SCREAM_PAYLOAD_SIZE % dev->frame_bytes) != 0) {
+             snd_pcm_lib_free_pages(substream);
+             return -EINVAL;
+         }
          u64 num = (u64)SCREAM_PAYLOAD_SIZE * 1000000000ULL; /* bytes * 1e9 */
-         do_div(num, (u32)(dev->sample_rate * frame_bytes)); /* -> nanoseconds per 1152 bytes */
+         do_div(num, (u32)(dev->sample_rate * dev->frame_bytes)); /* -> nanoseconds per 1152 bytes */
          dev->period_time_ns = ktime_set(0, (unsigned long)num);
      }
-     
-     dev->alsa_period_bytes = params_period_size(params) * dev->channels * 4;
+
+     dev->alsa_period_bytes = params_period_size(params) * dev->frame_bytes;
      dev->bytes_in_period = 0;
 
     return 0;
@@ -760,11 +778,13 @@ static snd_pcm_uframes_t snd_scream_pcm_pointer(struct snd_pcm_substream *substr
     unsigned long flags;
     struct snd_scream_device *dev = snd_pcm_substream_chip(substream);
     spin_lock_irqsave(&dev->lock, flags);
-    #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0)
-    frames = READ_ONCE(dev->hw_ptr) / 4 / dev->channels;
-    #else
-    frames = dev->hw_ptr / 4 / dev->channels;
-    #endif
+    if (dev->frame_bytes) {
+        #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0)
+        frames = READ_ONCE(dev->hw_ptr) / dev->frame_bytes;
+        #else
+        frames = dev->hw_ptr / dev->frame_bytes;
+        #endif
+    }
     spin_unlock_irqrestore(&dev->lock, flags);
     return frames;
 }
@@ -869,6 +889,7 @@ static int __init alsa_scream_driver_init(void)
     dev->playback_thread = NULL;
     dev->bytes_in_period = 0;
     dev->alsa_period_bytes = 0;
+    dev->frame_bytes = 0;
 
     ret = snd_pcm_new(card, "Scream HQ PCM", 0, 1, 0, &pcm);
     if (ret < 0) {
