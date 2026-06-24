@@ -13,6 +13,7 @@ int raw_output_init()
   ro_data.receiver_format.sample_size = 0;
   ro_data.receiver_format.channels = 2;
   ro_data.receiver_format.channel_map = 0x0003;
+  ro_data.receiver_format.wire_layout = 0;
   return 0;
 }
 

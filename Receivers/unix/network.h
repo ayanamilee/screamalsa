@@ -12,7 +12,7 @@
 #define DEFAULT_MULTICAST_GROUP "239.255.77.77"
 #define DEFAULT_PORT 4010
 
-#define HEADER_SIZE 5
+#define HEADER_SIZE 6
 #define MAX_SO_PACKETSIZE 1152+HEADER_SIZE
 
 typedef struct rctx_network {

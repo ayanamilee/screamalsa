@@ -93,6 +93,7 @@ int alsa_output_init(int latency, char *alsa_device)
   ao_data.receiver_format.sample_size = 0;
   ao_data.receiver_format.channels = 2;
   ao_data.receiver_format.channel_map = 0x0003;
+  ao_data.receiver_format.wire_layout = 0;
 
   ao_data.latency = latency;
   ao_data.alsa_device = alsa_device;
@@ -123,7 +124,15 @@ int alsa_output_send(receiver_data_t *data)
     ao_data.rate = ((rf->sample_rate >= 128) ? 44100 : 48000) * (rf->sample_rate % 128);
     switch (rf->sample_size) {
       case 16: format = SND_PCM_FORMAT_S16_LE; ao_data.bytes_per_sample = 2; break;
-      case 24: format = SND_PCM_FORMAT_S24_3LE; ao_data.bytes_per_sample = 3; break;
+      case 24:
+        if (rf->wire_layout == 1) {
+          format = SND_PCM_FORMAT_S24_LE;
+          ao_data.bytes_per_sample = 4;
+        } else {
+          format = SND_PCM_FORMAT_S24_3LE;
+          ao_data.bytes_per_sample = 3;
+        }
+        break;
       case 32: format = SND_PCM_FORMAT_S32_LE; ao_data.bytes_per_sample = 4; break;
       default:
         if (verbosity > 0)
@@ -200,7 +209,10 @@ int alsa_output_send(receiver_data_t *data)
       }
       else {
         if (verbosity > 0)
-          fprintf(stderr, "Switched format to sample rate %u, sample size %hhu and %u channels.\n", ao_data.rate, rf->sample_size, rf->channels);
+          fprintf(stderr, "Switched format to sample rate %u, sample size %hhu (%s), %u channels.\n",
+                  ao_data.rate, rf->sample_size,
+                  (rf->sample_size == 24) ? (rf->wire_layout ? "S24_LE" : "S24_3LE") : "PCM",
+                  rf->channels);
       }
     }
 

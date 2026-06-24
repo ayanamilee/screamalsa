@@ -11,7 +11,16 @@ over UDP/TCP using the Scream protocol. Pair it with this receiver as follows:
 |-----------|---------------------------|----------------------|
 | Protocol  | UDP unicast               | `-u`                 |
 | Port      | 4011                      | `-p 4011`            |
-| PCM depth | 16 or 32 bit              | auto (from header)   |
+| Header    | 6 bytes (extended)        | auto                 |
+| PCM depth | 16 / 24 / 32 bit          | auto (from header)   |
+
+Header byte `[5]` (wire layout) for 24-bit PCM:
+
+| `byte[1]` | `byte[5]` | Wire format | ALSA output    |
+|-----------|-----------|-------------|----------------|
+| 24        | 0         | packed 3B   | `S24_3LE`      |
+| 24        | 1         | 4B container| `S24_LE`       |
+| 16 / 32   | 0         | (ignored)   | `S16_LE`/`S32_LE` |
 
 Quick start after building:
 

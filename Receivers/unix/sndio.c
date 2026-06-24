@@ -32,7 +32,10 @@ int sndio_output_send(receiver_data_t *data)
       sio_stop(h);
     sio_initpar(&p);
     p.bits = rf->sample_size;
-    p.bps = SIO_BPS(p.bits);
+    if (rf->sample_size == 24)
+      p.bps = rf->wire_layout ? 4 : 3;
+    else
+      p.bps = SIO_BPS(p.bits);
     p.sig = p.bits > 8;
     p.le = 1;
     p.pchan = rf->channels;

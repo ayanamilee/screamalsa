@@ -46,7 +46,8 @@ void rcv_network(receiver_data_t* receiver_data)
   receiver_data->format.sample_size = rctx_network.buf[1];
   receiver_data->format.channels = rctx_network.buf[2];
   receiver_data->format.channel_map = (rctx_network.buf[4] << 8) | rctx_network.buf[3];
+  receiver_data->format.wire_layout = rctx_network.buf[5];
   receiver_data->audio_size = n - HEADER_SIZE;
-  receiver_data->audio = &rctx_network.buf[5];
+  receiver_data->audio = &rctx_network.buf[HEADER_SIZE];
 }
 

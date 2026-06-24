@@ -4,7 +4,7 @@ This repository contains a Linux kernel module `snd-screamalsa.c` and helper scr
 
 Key features
 - Virtual ALSA audio device backed by a network transport
-- Extended Scream protocol with DSD (Direct Stream Digital) support
+- Extended Scream protocol with 6-byte header, PCM 16/24/32-bit, and DSD support
 - Multi-distro build and install helpers for common Linux distributions
 
 Receivers

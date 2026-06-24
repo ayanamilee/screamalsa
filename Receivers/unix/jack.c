@@ -126,6 +126,7 @@ int jack_output_init(int latency, char *stream_name, int connect)
   jo_data.receiver_format.sample_size = 0;
   jo_data.receiver_format.channels = 2;
   jo_data.receiver_format.channel_map = 0x0003;
+  jo_data.receiver_format.wire_layout = 0;
 
   jo_data.soxr = NULL;
   jo_data.resample_buffer = NULL;

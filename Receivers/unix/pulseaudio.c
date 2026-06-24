@@ -33,6 +33,7 @@ int pulse_output_init(int latency, int max_latency, char *sink, char *stream_nam
   po_data.receiver_format.sample_size = 0;
   po_data.receiver_format.channels = 2;
   po_data.receiver_format.channel_map = 0x0003;
+  po_data.receiver_format.wire_layout = 0;
 
   po_data.latency = latency;
   po_data.max_latency = max_latency;

@@ -88,8 +88,9 @@ void pcap_callback(u_char *args, const struct pcap_pkthdr *header, const u_char 
   receiver_data.format.sample_size = payload[1];
   receiver_data.format.channels = payload[2];
   receiver_data.format.channel_map = (payload[4] << 8u) | payload[3];
+  receiver_data.format.wire_layout = payload[5];
   receiver_data.audio_size = size_payload - HEADER_SIZE;
-  receiver_data.audio = &payload[5];
+  receiver_data.audio = &payload[HEADER_SIZE];
 
   int ret = pcap_output_callback(&receiver_data);
   if (ret != 0) {

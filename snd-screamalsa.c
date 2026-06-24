@@ -95,7 +95,7 @@ static struct snd_card *scream_card_ptr = NULL;
 static struct platform_device *scream_pdev = NULL;
 static const u8 ch_mask[] = {0, 1, 3, 7, 15, 31, 63, 127, 255};
 #define SCREAM_PAYLOAD_SIZE 1152
-#define SCREAM_HEADER_SIZE 5
+#define SCREAM_HEADER_SIZE 6
 #define SCREAM_PACKET_SIZE (SCREAM_HEADER_SIZE + SCREAM_PAYLOAD_SIZE)
 
 
@@ -150,6 +150,8 @@ static struct snd_pcm_hardware snd_scream_hw = {
     .info = SCREAM_INFO_FLAGS,
     .formats =
         (SNDRV_PCM_FMTBIT_S16_LE
+         | SNDRV_PCM_FMTBIT_S24_3LE
+         | SNDRV_PCM_FMTBIT_S24_LE
          | SNDRV_PCM_FMTBIT_S32_LE
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
 #ifdef SNDRV_PCM_FMTBIT_DSD_U32_BE
@@ -174,11 +176,22 @@ static u8 scream_pcm_wire_bits(snd_pcm_format_t format)
     switch (format) {
     case SNDRV_PCM_FORMAT_S16_LE:
         return 16;
+    case SNDRV_PCM_FORMAT_S24_3LE:
+    case SNDRV_PCM_FORMAT_S24_LE:
+        return 24;
     case SNDRV_PCM_FORMAT_S32_LE:
         return 32;
     default:
         return 32;
     }
+}
+
+/* byte[5]: 0 = packed PCM, 1 = 24-bit in 32-bit LE containers (S24_LE) */
+static u8 scream_pcm_wire_layout(snd_pcm_format_t format)
+{
+    if (format == SNDRV_PCM_FORMAT_S24_LE)
+        return 1;
+    return 0;
 }
 
 static void convert_data(char*src, int frames)
@@ -422,6 +435,7 @@ static int scream_send_last_packet(struct snd_scream_device *dev)
 
     memcpy(lastbuf, dev->network_buffer, SCREAM_HEADER_SIZE);
     lastbuf[4] = 0x80;
+    lastbuf[5] = 0;
 
     iov.iov_base = lastbuf;
 
@@ -706,13 +720,15 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
     dev->is_dsd = false;
 #endif
 
-    /* Scream 5-byte header */
+    /* Scream 6-byte header (byte[5] = wire layout for 24-bit PCM) */
     if (dev->is_dsd) {
         srt = dev->sample_rate / 2;      /* DSD marker uses sample_rate/2 */
         dev->network_buffer[1] = 1;      /* DSD marker */
+        dev->network_buffer[5] = 0;
     } else {
         srt = dev->sample_rate;
         dev->network_buffer[1] = scream_pcm_wire_bits(dev->format);
+        dev->network_buffer[5] = scream_pcm_wire_layout(dev->format);
     }
 
     dev->network_buffer[0] = (u8)((srt % 44100) ? (0 + (srt / 48000)) : (128 + (srt / 44100)));
