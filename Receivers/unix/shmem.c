@@ -66,7 +66,12 @@ void rcv_shmem(receiver_data_t* receiver_data)
     rctx_shmem.read_idx = mod((header->write_idx-1), header->max_chunks);
   }
 
-  receiver_data->format.sample_rate = header->sample_rate;
+  /* shmem still uses legacy 8-bit rate code; decode to full value for consistency */
+  {
+    unsigned char old_code = header->sample_rate;
+    unsigned int sh_rate = ((old_code >= 128) ? 44100U : 48000U) * (old_code % 128);
+    receiver_data->format.sample_rate = sh_rate;
+  }
   receiver_data->format.sample_size = header->sample_size;
   receiver_data->format.channels = header->channels;
   receiver_data->format.channel_map = header->channel_map;

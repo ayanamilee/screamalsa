@@ -22,7 +22,7 @@ enum scream_wire_layout {
 #define SCREAM_SUPPORTED_CHANNELS 2
 
 typedef struct receiver_format {
-  unsigned char sample_rate;
+  uint32_t sample_rate;        /* Decoded rate value (from extended encoding). For DSD this is the halved value; receiver doubles when sample_size==1. */
   unsigned char sample_size;   /* 1=DSD, 16/24/32=PCM */
   unsigned char channels;
   uint16_t channel_map;
@@ -42,6 +42,21 @@ static inline unsigned int scream_bytes_per_sample(const receiver_format_t *rf)
   case 32: return 4;
   default: return 0;
   }
+}
+
+/* Decode rate from wire bytes (supports extended high-rate encoding for DSD512+).
+ * b0 = byte[0], b4 = byte[4]
+ */
+static inline uint32_t scream_decode_rate(unsigned char b0, unsigned char b4)
+{
+  uint16_t mult = (uint16_t)b0 | ((uint16_t)(b4 & 0x0F) << 8);
+  unsigned int base = (b4 & 0x10) ? 44100U : 48000U;
+  return (uint32_t)base * mult;
+}
+
+static inline int scream_is_end_of_track(unsigned char b4)
+{
+  return (b4 & 0x80) != 0;
 }
 
 typedef struct receiver_data {

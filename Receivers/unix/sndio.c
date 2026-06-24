@@ -39,7 +39,8 @@ int sndio_output_send(receiver_data_t *data)
     p.sig = p.bits > 8;
     p.le = 1;
     p.pchan = rf->channels;
-    p.rate = ((rf->sample_rate >= 128) ? 44100 : 48000) * (rf->sample_rate % 128);
+    /* sample_rate field now holds the decoded rate */
+    p.rate = rf->sample_rate;
     p.appbufsz = p.rate * latency_ms / 1000;
     p.xrun = SIO_IGNORE;
     if (!sio_setpar(h, &p)) {

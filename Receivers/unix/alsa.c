@@ -130,7 +130,8 @@ int alsa_output_send(receiver_data_t *data)
       return 0;
     }
 
-    ao_data.rate = ((rf->sample_rate >= 128) ? 44100 : 48000) * (rf->sample_rate % 128);
+    /* sample_rate field now holds the fully decoded header rate value */
+    ao_data.rate = rf->sample_rate;
     switch (rf->sample_size) {
       case 16: format = SND_PCM_FORMAT_S16_LE; ao_data.bytes_per_sample = 2; break;
       case 24:
@@ -146,9 +147,7 @@ int alsa_output_send(receiver_data_t *data)
       case 1:
         format = SND_PCM_FORMAT_DSD_U32_BE;
         ao_data.bytes_per_sample = 4;
-        /* Driver encodes half the DSD sample rate in byte[0];
-         * restore the real DSD rate for ALSA.
-         */
+        /* Driver encodes half the DSD sample rate; receiver restores full rate. */
         ao_data.rate *= 2;
         break;
       default:

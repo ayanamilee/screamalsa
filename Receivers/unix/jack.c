@@ -174,7 +174,8 @@ int jack_output_send(receiver_data_t *data)
     // audio format changed, reconfigure
     memcpy(&jo_data.receiver_format, rf, sizeof(receiver_format_t));
 
-    jo_data.sample_rate = ((rf->sample_rate >= 128) ? 44100 : 48000) * (rf->sample_rate % 128);
+    /* sample_rate field holds decoded value (jack currently only supports 16/32) */
+    jo_data.sample_rate = rf->sample_rate;
 
     printf(
       "Switched sample rate %"PRIu32", sample size %u and %u channels\n",

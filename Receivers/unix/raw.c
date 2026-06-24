@@ -25,11 +25,18 @@ int raw_output_send(receiver_data_t *data)
     // audio format changed, reconfigure
     memcpy(&ro_data.receiver_format, rf, sizeof(receiver_format_t));
 
-    ro_data.rate = ((rf->sample_rate >= 128) ? 44100 : 48000) * (rf->sample_rate % 128);
+    /* sample_rate now holds decoded value */
+    ro_data.rate = rf->sample_rate;
     switch (rf->sample_size) {
       case 16:
       case 24:
       case 32:
+        break;
+      case 1:
+        if (verbosity > 0) {
+          fprintf(stderr, "DSD not supported in raw output.\n");
+        }
+        ro_data.rate = 0;
         break;
       default:
         if (verbosity > 0) {

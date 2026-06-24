@@ -1,5 +1,6 @@
 #include "network.h"
 #include "stdio.h"
+#include <unistd.h>
 
 static rctx_network_t rctx_network;
 
@@ -41,13 +42,27 @@ void rcv_network(receiver_data_t* receiver_data)
 
   while (n < HEADER_SIZE) {
     n = recvfrom(rctx_network.sockfd, rctx_network.buf, MAX_SO_PACKETSIZE, 0, NULL, 0);
+    if (n < 0) {
+      if (verbosity) perror("recvfrom");
+      usleep(1000);
+      n = 0;
+      continue;
+    }
   }
-  receiver_data->format.sample_rate = rctx_network.buf[0];
-  receiver_data->format.sample_size = rctx_network.buf[1];
-  receiver_data->format.channels = rctx_network.buf[2];
-  receiver_data->format.channel_map = (rctx_network.buf[4] << 8) | rctx_network.buf[3];
-  receiver_data->format.wire_layout = rctx_network.buf[5];
-  receiver_data->audio_size = n - HEADER_SIZE;
+  unsigned char b0 = rctx_network.buf[0];
+  unsigned char b1 = rctx_network.buf[1];
+  unsigned char b2 = rctx_network.buf[2];
+  unsigned char b3 = rctx_network.buf[3];
+  unsigned char b4 = rctx_network.buf[4];
+  unsigned char b5 = rctx_network.buf[5];
+
+  receiver_data->format.sample_rate = scream_decode_rate(b0, b4);
+  receiver_data->format.sample_size = b1;
+  receiver_data->format.channels = b2;
+  /* channel_map from low byte only (driver puts chmask here; b4 now carries rate+flag) */
+  receiver_data->format.channel_map = b3;
+  receiver_data->format.wire_layout = b5;
+  receiver_data->audio_size = (n > HEADER_SIZE) ? (n - HEADER_SIZE) : 0;
   receiver_data->audio = &rctx_network.buf[HEADER_SIZE];
 }
 

@@ -8,9 +8,10 @@ Key features
 - Multi-distro build and install helpers for common Linux distributions
 
 Protocol notes
-- Header byte[5] (wire_layout) is only meaningful when byte[1] == 24:
-  0 = packed 24-bit (S24_3LE, 3 bytes/sample), 1 = 24-bit in 32-bit LE container (S24_LE).
-  Receivers should ignore wire_layout for all other sample sizes (including DSD, byte[1] == 1).
+- Header byte[5] (wire_layout) only for 24-bit PCM (0=packed S24_3LE 3B, 1=S24_LE 4B container).
+- Rate encoding extended using byte[0] + bits in byte[4] to support high DSD rates (DSD512 / DSD1024).
+- Receivers should ignore wire_layout for non-24 and DSD (byte[1]==1).
+- ALSA receiver supports full PCM 16/24/32 + DSD; Pulse receiver has 24-bit wire_layout fix (S24_32LE vs S24LE).
 
 Receivers
 - Unix/Linux receiver (ALSA, PulseAudio, JACK, etc.) is included in this repository under Receivers/unix/.

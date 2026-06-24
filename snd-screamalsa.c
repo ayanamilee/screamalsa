@@ -97,9 +97,7 @@ static const u8 ch_mask[] = {0, 1, 3, 7, 15, 31, 63, 127, 255};
 /*
  * ScreamALSA extended protocol header (6 bytes)
  *
- * byte[0] : sample_rate encoding
- *           - 44.1kHz family: 128 + (rate / 44100)
- *           - 48kHz family:    0   + (rate / 48000)
+ * byte[0] : rate mult low 8 bits (mult & 0xff)
  * byte[1] : sample size / format marker
  *           -  1: DSD (DSD_U32_BE, 4 bytes per sample on wire)
  *           - 16: PCM 16-bit (S16_LE)
@@ -107,11 +105,22 @@ static const u8 ch_mask[] = {0, 1, 3, 7, 15, 31, 63, 127, 255};
  *           - 32: PCM 32-bit (S32_LE)
  * byte[2] : channel count
  * byte[3] : channel mask (low 8 bits)
- * byte[4] : flags (0x80 = end-of-track marker)
+ * byte[4] : rate extension + flags
+ *           - bit 7 (0x80): end-of-track marker
+ *           - bit 4 (0x10): 1 = 44.1 kHz family, 0 = 48 kHz family
+ *           - bits 3-0: (mult >> 8) & 0x0f
  * byte[5] : wire layout (only meaningful when byte[1] == 24)
  *           - 0: packed 24-bit (S24_3LE), 3 bytes per sample
  *           - 1: 24-bit in 32-bit LE container (S24_LE), 4 bytes per sample
- *           Ignored for all other sample sizes.
+ *           Ignored for all other sample sizes (including DSD).
+ *
+ * Rate encoding supports high DSD rates (DSD512 = 22.5792 MHz, DSD1024 = 45.1584 MHz):
+ *   srt = (is_dsd ? sample_rate / 2 : sample_rate)
+ *   base = (srt % 44100 == 0) ? 44100 : 48000
+ *   mult = srt / base   (up to ~4095 supported via 12 bits)
+ *   byte[0] = mult & 0xff
+ *   byte[4] = ((mult >> 8) & 0x0f) | (is_441 ? 0x10 : 0)
+ * Receiver (ALSA) decodes full rate and *2 for DSD.
  */
 #define SCREAM_PAYLOAD_SIZE 1152
 #define SCREAM_HEADER_SIZE 6
@@ -180,7 +189,7 @@ static struct snd_pcm_hardware snd_scream_hw = {
         ),
     .rates = SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_KNOT,
     .rate_min = 44100,
-    .rate_max = 1536000,
+    .rate_max = 100000000, /* Support up to at least DSD1024 (~45MHz) */
     .channels_min = 2,
     .channels_max = 2,
     .buffer_bytes_max = 1024 * 1024,
@@ -462,7 +471,7 @@ static int scream_send_last_packet(struct snd_scream_device *dev)
     int ret = 0;
 
     memcpy(lastbuf, dev->network_buffer, SCREAM_HEADER_SIZE);
-    lastbuf[4] = 0x80;
+    lastbuf[4] = (lastbuf[4] & 0x7F) | 0x80; /* set end flag, preserve rate extension bits */
     lastbuf[5] = 0;
 
     iov.iov_base = lastbuf;
@@ -754,9 +763,9 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
     dev->is_dsd = false;
 #endif
 
-    /* Scream 6-byte header (byte[5] = wire layout for 24-bit PCM) */
+    /* Scream 6-byte extended header with high-rate support */
     if (dev->is_dsd) {
-        srt = dev->sample_rate / 2;      /* DSD marker uses sample_rate/2 */
+        srt = dev->sample_rate / 2;      /* DSD marker uses sample_rate/2; receiver doubles */
         dev->network_buffer[1] = 1;      /* DSD marker */
         dev->network_buffer[5] = 0;
     } else {
@@ -765,10 +774,15 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
         dev->network_buffer[5] = scream_pcm_wire_layout(dev->format);
     }
 
-    dev->network_buffer[0] = (u8)((srt % 44100) ? (0 + (srt / 48000)) : (128 + (srt / 44100)));
+    /* New rate encoding for DSD512/1024+ */
+    {
+        unsigned int base = (srt % 44100U == 0) ? 44100U : 48000U;
+        unsigned int mult = srt / base;
+        dev->network_buffer[0] = (u8)(mult & 0xff);
+        dev->network_buffer[4] = (u8)(((mult >> 8) & 0x0f) | ((base == 44100U) ? 0x10 : 0x00));
+    }
     dev->network_buffer[2] = (u8)dev->channels;
     dev->network_buffer[3] = ch_mask[dev->channels];
-    dev->network_buffer[4] = 0;
     /* Compute ALSA frame size and verify the fixed 1152-byte payload is an
      * integer number of frames. This keeps packet timing independent of the
      * selected sample format. frame_bytes uses physical_width, so S24_LE
@@ -781,11 +795,12 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
              return -EINVAL;
          }
          /* Packet interval: time to play SCREAM_PAYLOAD_SIZE bytes at the
-          * current sample rate and frame size.
+          * current sample rate and frame size. Use 64-bit for high DSD rates.
           */
-         u64 num = (u64)SCREAM_PAYLOAD_SIZE * 1000000000ULL; /* bytes * 1e9 */
-         do_div(num, (u32)(dev->sample_rate * dev->frame_bytes)); /* ns per 1152 bytes */
-         dev->period_time_ns = ktime_set(0, (unsigned long)num);
+         u64 bytes_per_sec = (u64)dev->sample_rate * dev->frame_bytes;
+         u64 num = (u64)SCREAM_PAYLOAD_SIZE * 1000000000ULL;
+         u64 period_ns = (bytes_per_sec == 0) ? 0 : div64_u64(num, bytes_per_sec);
+         dev->period_time_ns = ktime_set(0, (unsigned long)period_ns);
      }
 
      dev->alsa_period_bytes = params_period_size(params) * dev->frame_bytes;

@@ -84,11 +84,18 @@ void pcap_callback(u_char *args, const struct pcap_pkthdr *header, const u_char 
     return;
   }
 
-  receiver_data.format.sample_rate = payload[0];
-  receiver_data.format.sample_size = payload[1];
-  receiver_data.format.channels = payload[2];
-  receiver_data.format.channel_map = (payload[4] << 8u) | payload[3];
-  receiver_data.format.wire_layout = payload[5];
+  unsigned char b0 = payload[0];
+  unsigned char b1 = payload[1];
+  unsigned char b2 = payload[2];
+  unsigned char b3 = payload[3];
+  unsigned char b4 = payload[4];
+  unsigned char b5 = payload[5];
+
+  receiver_data.format.sample_rate = scream_decode_rate(b0, b4);
+  receiver_data.format.sample_size = b1;
+  receiver_data.format.channels = b2;
+  receiver_data.format.channel_map = b3;
+  receiver_data.format.wire_layout = b5;
   receiver_data.audio_size = size_payload - HEADER_SIZE;
   receiver_data.audio = &payload[HEADER_SIZE];
 

@@ -12,6 +12,11 @@
 #define DEFAULT_MULTICAST_GROUP "239.255.77.77"
 #define DEFAULT_PORT 4010
 
+/* ScreamALSA extended protocol header size.
+ * See the driver source (snd-screamalsa.c) for the full 6-byte header layout.
+ * byte[0]+byte[4] extended for high sample rates (DSD512/DSD1024 support).
+ * byte[5] is wire_layout only for 24-bit PCM.
+ */
 #define HEADER_SIZE 6
 #define MAX_SO_PACKETSIZE (1152 + HEADER_SIZE)
 
