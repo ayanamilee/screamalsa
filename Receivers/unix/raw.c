@@ -25,7 +25,7 @@ int raw_output_send(receiver_data_t *data)
     // audio format changed, reconfigure
     memcpy(&ro_data.receiver_format, rf, sizeof(receiver_format_t));
 
-    /* sample_rate now holds decoded value */
+    /* sample_rate now holds decoded value (halved for DSD) */
     ro_data.rate = rf->sample_rate;
     switch (rf->sample_size) {
       case 16:
@@ -33,16 +33,24 @@ int raw_output_send(receiver_data_t *data)
       case 32:
         break;
       case 1:
-        if (verbosity > 0) {
-          fprintf(stderr, "DSD not supported in raw output.\n");
-        }
-        ro_data.rate = 0;
+        /* DSD: double the rate (driver encodes half-rate); raw just passes bytes through */
+        ro_data.rate *= 2;
         break;
       default:
         if (verbosity > 0) {
           fprintf(stderr, "Unsupported sample size %hhu, not playing until next format switch.\n", rf->sample_size);
         }
         ro_data.rate = 0;
+    }
+
+    ro_data.bytes_per_sample = scream_bytes_per_sample(rf);
+
+    if (verbosity > 0) {
+      const char *fmt_name = (rf->sample_size == 1) ? "DSD" :
+                             (rf->sample_size == 24 && rf->wire_layout) ? "S24_LE" :
+                             (rf->sample_size == 24) ? "S24_3LE" : "PCM";
+      fprintf(stderr, "Switched to sample rate %u, sample size %hhu (%s), %u channels.\n",
+              ro_data.rate, rf->sample_size, fmt_name, rf->channels);
     }
 
     if (rf->channels > 2) {
