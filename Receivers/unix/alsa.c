@@ -121,6 +121,15 @@ int alsa_output_send(receiver_data_t *data)
     // audio format changed, reconfigure
     memcpy(&ao_data.receiver_format, rf, sizeof(receiver_format_t));
 
+    if (rf->channels != SCREAM_SUPPORTED_CHANNELS) {
+      fprintf(stderr, "ScreamALSA receiver: only %d channels supported (got %u)\n",
+              SCREAM_SUPPORTED_CHANNELS, rf->channels);
+      ao_data.rate = 0;
+      close_alsa(ao_data.snd);
+      ao_data.snd = NULL;
+      return 0;
+    }
+
     ao_data.rate = ((rf->sample_rate >= 128) ? 44100 : 48000) * (rf->sample_rate % 128);
     switch (rf->sample_size) {
       case 16: format = SND_PCM_FORMAT_S16_LE; ao_data.bytes_per_sample = 2; break;
@@ -137,7 +146,10 @@ int alsa_output_send(receiver_data_t *data)
       case 1:
         format = SND_PCM_FORMAT_DSD_U32_BE;
         ao_data.bytes_per_sample = 4;
-        ao_data.rate *= 2;   /* driver encodes half the DSD rate in byte[0] */
+        /* Driver encodes half the DSD sample rate in byte[0];
+         * restore the real DSD rate for ALSA.
+         */
+        ao_data.rate *= 2;
         break;
       default:
         if (verbosity > 0)

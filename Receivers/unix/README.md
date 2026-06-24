@@ -12,6 +12,7 @@ over UDP/TCP using the Scream protocol. Pair it with this receiver as follows:
 | Protocol  | UDP unicast               | `-u`                 |
 | Port      | 4011                      | `-p 4011`            |
 | Header    | 6 bytes (extended)        | auto                 |
+| Channels  | 2 (stereo only)           | auto (from header)   |
 | PCM depth | 16 / 24 / 32 bit          | auto (from header)   |
 
 Header byte `[5]` (wire layout) for 24-bit PCM:

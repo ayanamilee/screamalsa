@@ -1,7 +1,7 @@
 /*
  * ScreamALSA Linux Kernel Driver
  *
- * Compatibility: Linux kernel 3.8 - 6.x
+ * Compatibility: Linux kernel 3.8 - 7.x
  *
  * This driver implements a virtual sound card that streams audio over network
  *
@@ -94,6 +94,25 @@ MODULE_PARM_DESC(port, "Target port");
 static struct snd_card *scream_card_ptr = NULL;
 static struct platform_device *scream_pdev = NULL;
 static const u8 ch_mask[] = {0, 1, 3, 7, 15, 31, 63, 127, 255};
+/*
+ * ScreamALSA extended protocol header (6 bytes)
+ *
+ * byte[0] : sample_rate encoding
+ *           - 44.1kHz family: 128 + (rate / 44100)
+ *           - 48kHz family:    0   + (rate / 48000)
+ * byte[1] : sample size / format marker
+ *           -  1: DSD (DSD_U32_BE, 4 bytes per sample on wire)
+ *           - 16: PCM 16-bit (S16_LE)
+ *           - 24: PCM 24-bit (S24_3LE or S24_LE, see byte[5])
+ *           - 32: PCM 32-bit (S32_LE)
+ * byte[2] : channel count
+ * byte[3] : channel mask (low 8 bits)
+ * byte[4] : flags (0x80 = end-of-track marker)
+ * byte[5] : wire layout (only meaningful when byte[1] == 24)
+ *           - 0: packed 24-bit (S24_3LE), 3 bytes per sample
+ *           - 1: 24-bit in 32-bit LE container (S24_LE), 4 bytes per sample
+ *           Ignored for all other sample sizes.
+ */
 #define SCREAM_PAYLOAD_SIZE 1152
 #define SCREAM_HEADER_SIZE 6
 #define SCREAM_PACKET_SIZE (SCREAM_HEADER_SIZE + SCREAM_PAYLOAD_SIZE)
@@ -132,7 +151,7 @@ struct snd_scream_device {
 
     unsigned int sample_rate;
     unsigned int channels;
-    unsigned int frame_bytes;   /* bytes per interleaved frame */
+    unsigned int frame_bytes;   /* ALSA bytes per interleaved frame (physical_width/8 * channels) */
     snd_pcm_format_t format;
     bool is_dsd;
 
@@ -163,7 +182,7 @@ static struct snd_pcm_hardware snd_scream_hw = {
     .rate_min = 44100,
     .rate_max = 1536000,
     .channels_min = 2,
-    .channels_max = 8,
+    .channels_max = 2,
     .buffer_bytes_max = 1024 * 1024,
     .period_bytes_min = SCREAM_PAYLOAD_SIZE,
     .period_bytes_max = SCREAM_PAYLOAD_SIZE * 128,
@@ -171,6 +190,9 @@ static struct snd_pcm_hardware snd_scream_hw = {
     .periods_max = 1024,
 };
 
+/* Map ALSA format to the sample_size byte in the Scream header.
+ * For PCM this is the effective bit depth; for DSD the caller writes 1 directly.
+ */
 static u8 scream_pcm_wire_bits(snd_pcm_format_t format)
 {
     switch (format) {
@@ -186,9 +208,13 @@ static u8 scream_pcm_wire_bits(snd_pcm_format_t format)
     }
 }
 
-#define SCREAM_WIRE_PACKED  0U
-#define SCREAM_WIRE_S24_LE  1U
+/* wire_layout byte (header byte[5]) values. Only meaningful for 24-bit PCM. */
+#define SCREAM_WIRE_PACKED  0U   /* S24_3LE: 3 bytes per sample on wire */
+#define SCREAM_WIRE_S24_LE  1U   /* S24_LE: 24-bit samples in 32-bit LE containers */
 
+/* Map ALSA format to the wire_layout byte.
+ * Only 24-bit PCM has two possible on-wire layouts; everything else is packed.
+ */
 static u8 scream_pcm_wire_layout(snd_pcm_format_t format)
 {
     if (format == SNDRV_PCM_FORMAT_S24_LE)
@@ -711,6 +737,12 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
     dev->channels = params_channels(params);
     dev->format = params_format(params);
 
+    if (dev->channels != 2) {
+        pr_err(DRIVER_NAME ": only stereo (2 channels) is supported, got %u\n",
+               dev->channels);
+        snd_pcm_lib_free_pages(substream);
+        return -EINVAL;
+    }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
 #ifdef SNDRV_PCM_FORMAT_DSD_U32_BE
@@ -737,14 +769,22 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
     dev->network_buffer[2] = (u8)dev->channels;
     dev->network_buffer[3] = ch_mask[dev->channels];
     dev->network_buffer[4] = 0;
+    /* Compute ALSA frame size and verify the fixed 1152-byte payload is an
+     * integer number of frames. This keeps packet timing independent of the
+     * selected sample format. frame_bytes uses physical_width, so S24_LE
+     * (4-byte container) and S24_3LE (3-byte packed) are handled correctly.
+     */
      {
          dev->frame_bytes = (snd_pcm_format_physical_width(dev->format) / 8) * dev->channels;
          if (!dev->frame_bytes || (SCREAM_PAYLOAD_SIZE % dev->frame_bytes) != 0) {
              snd_pcm_lib_free_pages(substream);
              return -EINVAL;
          }
+         /* Packet interval: time to play SCREAM_PAYLOAD_SIZE bytes at the
+          * current sample rate and frame size.
+          */
          u64 num = (u64)SCREAM_PAYLOAD_SIZE * 1000000000ULL; /* bytes * 1e9 */
-         do_div(num, (u32)(dev->sample_rate * dev->frame_bytes)); /* -> nanoseconds per 1152 bytes */
+         do_div(num, (u32)(dev->sample_rate * dev->frame_bytes)); /* ns per 1152 bytes */
          dev->period_time_ns = ktime_set(0, (unsigned long)num);
      }
 

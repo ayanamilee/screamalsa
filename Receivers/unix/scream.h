@@ -11,19 +11,28 @@ enum output_type {
   Raw, Alsa, Pulseaudio, Jack, Sndio
 };
 
+/* wire_layout byte (header byte[5]). Meaningful only for 24-bit PCM;
+ * receivers must ignore it for all other sample sizes.
+ */
 enum scream_wire_layout {
   SCREAM_WIRE_PACKED = 0,   /* S24_3LE: 3 bytes per sample on the wire */
   SCREAM_WIRE_S24_LE = 1,   /* S24_LE: 24-bit samples in 32-bit LE containers */
 };
 
+#define SCREAM_SUPPORTED_CHANNELS 2
+
 typedef struct receiver_format {
   unsigned char sample_rate;
-  unsigned char sample_size;
+  unsigned char sample_size;   /* 1=DSD, 16/24/32=PCM */
   unsigned char channels;
   uint16_t channel_map;
-  unsigned char wire_layout;  /* byte[5]: 0=packed, 1=24-bit in 32-bit LE containers */
+  unsigned char wire_layout;   /* byte[5]: see enum scream_wire_layout */
 } receiver_format_t;
 
+/* Return the number of bytes occupied by one sample on the wire.
+ * For PCM this follows wire_layout when sample_size == 24.
+ * For DSD (sample_size == 1) it is always 4 bytes (DSD_U32_BE).
+ */
 static inline unsigned int scream_bytes_per_sample(const receiver_format_t *rf)
 {
   switch (rf->sample_size) {

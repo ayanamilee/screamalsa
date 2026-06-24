@@ -4,8 +4,13 @@ This repository contains a Linux kernel module `snd-screamalsa.c` and helper scr
 
 Key features
 - Virtual ALSA audio device backed by a network transport
-- Extended Scream protocol with 6-byte header, PCM 16/24/32-bit, and DSD support
+- Extended Scream protocol with 6-byte header, stereo-only PCM 16/24/32-bit, and DSD support
 - Multi-distro build and install helpers for common Linux distributions
+
+Protocol notes
+- Header byte[5] (wire_layout) is only meaningful when byte[1] == 24:
+  0 = packed 24-bit (S24_3LE, 3 bytes/sample), 1 = 24-bit in 32-bit LE container (S24_LE).
+  Receivers should ignore wire_layout for all other sample sizes (including DSD, byte[1] == 1).
 
 Receivers
 - Unix/Linux receiver (ALSA, PulseAudio, JACK, etc.) is included in this repository under Receivers/unix/.
