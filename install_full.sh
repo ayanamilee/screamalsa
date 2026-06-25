@@ -85,9 +85,22 @@ check_dependencies() {
     local need_build_tools=0
     local install_pkgs=()
     
-    # Build tools: gcc and make
-    if ! have_cmd gcc || ! have_cmd make; then
-        need_build_tools=1
+    # Build tools: gcc/make or clang for Clang-built kernels
+    is_clang_kernel=false
+    if [[ -f "/lib/modules/$(uname -r)/build/.config" ]]; then
+        if grep -q '^CONFIG_CC_IS_CLANG=y' "/lib/modules/$(uname -r)/build/.config" 2>/dev/null; then
+            is_clang_kernel=true
+        fi
+    fi
+
+    if $is_clang_kernel; then
+        if ! have_cmd clang || ! have_cmd make; then
+            need_build_tools=1
+        fi
+    else
+        if ! have_cmd gcc || ! have_cmd make; then
+            need_build_tools=1
+        fi
     fi
     
     # Check kernel headers
@@ -109,6 +122,13 @@ check_dependencies() {
             *)      ;; # unknown
         esac
     fi
+
+    # For Clang-built kernels (e.g. some Arch ARM/RPi), we may also need clang+lld
+    if $is_clang_kernel; then
+        if ! have_cmd clang || ! have_cmd ld.lld; then
+            need_build_tools=1
+        fi
+    fi
     
     # Kernel headers per distro
     if [ "$headers_missing" -eq 1 ]; then
@@ -127,7 +147,15 @@ check_dependencies() {
     # Install build tools per distro if needed
     if [ "$need_build_tools" -eq 1 ]; then
         case "$PKG_MGR" in
-            pacman) log_info "Installing build tools (base-devel)..."; pacman -S --needed --noconfirm base-devel ;;
+            pacman)
+                if $is_clang_kernel; then
+                    log_info "Installing build tools for Clang-built kernel (base-devel clang lld)..."
+                    pacman -S --needed --noconfirm base-devel clang lld
+                else
+                    log_info "Installing build tools (base-devel)..."
+                    pacman -S --needed --noconfirm base-devel
+                fi
+                ;;
             apt)    log_info "Installing build tools (build-essential)..."; apt-get update && apt-get install -y build-essential ;;
             dnf)    log_info "Installing build tools (Development Tools group)..."; dnf -y groupinstall 'Development Tools' ;;
             yum)    log_info "Installing build tools (Development Tools group)..."; yum -y groupinstall 'Development Tools' ;;

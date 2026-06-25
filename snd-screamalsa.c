@@ -114,7 +114,8 @@ static const u8 ch_mask[] = {0, 1, 3, 7, 15, 31, 63, 127, 255};
  *           - 1: 24-bit in 32-bit LE container (S24_LE), 4 bytes per sample
  *           Ignored for all other sample sizes (including DSD).
  *
- * Rate encoding supports high DSD rates (DSD512 = 22.5792 MHz, DSD1024 = 45.1584 MHz):
+ * Rate encoding supports DSD rates up to DSD512 (22.5792 MHz bit rate).
+ * (DSD1024+ would require even higher rates but is limited by the fixed 1152-byte payload and practical scheduling.)
  *   srt = (is_dsd ? sample_rate / 2 : sample_rate)
  *   base = (srt % 44100 == 0) ? 44100 : 48000
  *   mult = srt / base   (up to ~4095 supported via 12 bits)
@@ -189,7 +190,7 @@ static struct snd_pcm_hardware snd_scream_hw = {
         ),
     .rates = SNDRV_PCM_RATE_CONTINUOUS | SNDRV_PCM_RATE_KNOT,
     .rate_min = 44100,
-    .rate_max = 100000000, /* Support up to at least DSD1024 (~45MHz) */
+    .rate_max = 30000000, /* Support up to DSD512 (22.5792 MHz bit rate). Higher DSD rates (DSD1024+) are not practical with current fixed payload design. */
     .channels_min = 2,
     .channels_max = 2,
     .buffer_bytes_max = 1024 * 1024,
@@ -774,7 +775,7 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
         dev->network_buffer[5] = scream_pcm_wire_layout(dev->format);
     }
 
-    /* New rate encoding for DSD512/1024+ */
+    /* New rate encoding for high DSD rates (up to DSD512) */
     {
         unsigned int base = (srt % 44100U == 0) ? 44100U : 48000U;
         unsigned int mult = srt / base;

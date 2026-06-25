@@ -29,7 +29,7 @@ Or pass options directly:
 ```
 
 Supported PCM formats: stereo-only 16 / 24 / 32-bit (`S16_LE`, `S24_3LE`, `S24_LE`,
-`S32_LE`), plus DSD (up to DSD1024 with ALSA backend). ScreamALSA uses a 6-byte
+`S32_LE`), plus DSD (up to DSD512 with ALSA backend). DSD1024+ is not supported due to practical limits. ScreamALSA uses a 6-byte
 protocol header; byte `[5]` selects packed vs container for 24-bit; rate encoding
 (bytes 0+4) extended for high rates (DSD512+). Multichannel (>2) rejected by driver + ALSA rcv.
 

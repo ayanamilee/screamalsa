@@ -63,6 +63,7 @@ print_header_hint() {
         pacman)
             local hpkg; hpkg="$(arch_header_pkg)"
             echo "  - Arch/Manjaro/EndeavourOS: sudo pacman -S --needed base-devel ${hpkg}"
+            echo "    (For Clang-built kernels like some RPi/ARM: also install 'clang lld')"
             ;;
         apt)
             echo "  - Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y build-essential linux-headers-${kv}"
@@ -104,7 +105,10 @@ print_header_hint() {
 
 print_build_tools_hint() {
     case "$PKG_MGR" in
-        pacman) echo "  Hint: sudo pacman -S --needed base-devel" ;;
+        pacman)
+            echo "  Hint: sudo pacman -S --needed base-devel"
+            echo "         (For Clang-built kernels: sudo pacman -S --needed clang lld)"
+            ;;
         apt)    echo "  Hint: sudo apt-get install -y build-essential" ;;
         dnf)    echo "  Hint: sudo dnf groupinstall -y 'Development Tools'" ;;
         yum)    echo "  Hint: sudo yum groupinstall -y 'Development Tools'" ;;
@@ -161,14 +165,6 @@ fi
 
 # Check for build tools
 echo "Checking build tools..."
-if have_cmd gcc; then
-    echo "✓ GCC found: $(gcc --version | head -n1)"
-else
-    echo "✗ GCC missing"
-    print_build_tools_hint
-    exit 1
-fi
-
 if have_cmd make; then
     echo "✓ Make found: $(make --version | head -n1)"
 else
@@ -177,29 +173,85 @@ else
     exit 1
 fi
 
+# Detect if kernel was built with Clang (common on Arch ARM/RPi kernels)
+is_clang_kernel=false
+build_dir="/lib/modules/$(uname -r)/build"
+if [[ -f "$build_dir/.config" ]]; then
+    if grep -q '^CONFIG_CC_IS_CLANG=y' "$build_dir/.config" 2>/dev/null; then
+        is_clang_kernel=true
+        echo "✓ Detected Clang-built kernel (from .config)"
+    fi
+fi
+
+if $is_clang_kernel; then
+    if have_cmd clang; then
+        echo "✓ Clang found: $(clang --version | head -n1)"
+    else
+        echo "✗ Clang missing (required for this kernel)"
+        echo "  Hint: sudo pacman -S --needed clang lld"
+        exit 1
+    fi
+    if have_cmd ld.lld; then
+        echo "✓ lld found"
+    else
+        echo "✗ lld (LLVM linker) missing"
+        echo "  Hint: sudo pacman -S --needed clang lld"
+        exit 1
+    fi
+else
+    if have_cmd gcc; then
+        echo "✓ GCC found: $(gcc --version | head -n1)"
+    else
+        echo "✗ GCC missing"
+        print_build_tools_hint
+        exit 1
+    fi
+fi
+
 # Try to build
 echo "Attempting build..."
 make clean > /dev/null 2>&1 || true
 
-if make > build.log 2>&1; then
-    echo "✓ Build successful"
-    if [[ -f snd-screamalsa.ko ]]; then
-        ls -la snd-screamalsa.ko
-        if have_cmd modinfo; then
-            modinfo snd-screamalsa.ko | head -5
-        else
-            echo "(modinfo not found; skipping module info output)"
-        fi
+build_log="build.log"
+if $is_clang_kernel; then
+    echo "Using Clang + LLVM=1 (kernel was built with Clang)..."
+    if make -C "/lib/modules/$(uname -r)/build" M="$(pwd)" \
+            CC=clang LD=ld.lld LLVM=1 \
+            > "$build_log" 2>&1; then
+        echo "✓ Build successful"
+    else
+        echo "✗ Build failed"
+        echo "Build log:"
+        cat "$build_log"
+        echo ""
+        echo "Common solutions:"
+        print_header_hint
+        echo "  - For Clang-built kernels (common on Arch ARM/RPi):"
+        echo "    sudo pacman -S --needed clang lld"
+        exit 1
     fi
 else
-    echo "✗ Build failed"
-    echo "Build log:"
-    cat build.log
-    echo ""
-    echo "Common solutions:"
-    print_header_hint
-    print_build_tools_hint
-    exit 1
+    if make > "$build_log" 2>&1; then
+        echo "✓ Build successful"
+    else
+        echo "✗ Build failed"
+        echo "Build log:"
+        cat "$build_log"
+        echo ""
+        echo "Common solutions:"
+        print_header_hint
+        print_build_tools_hint
+        exit 1
+    fi
+fi
+
+if [[ -f snd-screamalsa.ko ]]; then
+    ls -la snd-screamalsa.ko
+    if have_cmd modinfo; then
+        modinfo snd-screamalsa.ko | head -5
+    else
+        echo "(modinfo not found; skipping module info output)"
+    fi
 fi
 
 echo ""
