@@ -232,25 +232,6 @@ static u8 scream_pcm_wire_layout(snd_pcm_format_t format)
     return SCREAM_WIRE_PACKED;
 }
 
-static void convert_data(char*src, int frames)
-{
-        int i = 0;
-        char src1, src2;
-        while(i++ < frames)
-        {
-            src1 = src[1];
-            src[1] = src[4];
-            src2 = src[2];
-            src[2] = src1;
-            src1 = src[3];
-            src[3] = src[5];
-            src[4] = src2;
-            src[5] = src[6];
-            src[6] = src1;
-            src+=8;
-        }
-}
-
 static inline void set_sock_timeouts(struct socket *sock, unsigned int msec)
 {
     struct sock *sk = sock->sk;
@@ -505,8 +486,9 @@ static void scream_build_payload_locked(struct snd_scream_device *dev,
     } else {
         memcpy(data, runtime->dma_area + current_hw_ptr, SCREAM_PAYLOAD_SIZE);
     }
-    if(dev->is_dsd)
-        convert_data(data, SCREAM_PAYLOAD_SIZE/8);
+    /* DSD_U32_BE is sent in standard ALSA frame order; the receiver passes
+     * bytes through unchanged. No additional conversion is applied.
+     */
 }
 
 static int scream_playback_thread(void *data)
