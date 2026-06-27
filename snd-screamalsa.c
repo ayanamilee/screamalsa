@@ -454,7 +454,7 @@ static int scream_send_last_packet(struct snd_scream_device *dev)
 
     memcpy(lastbuf, dev->network_buffer, SCREAM_HEADER_SIZE);
     lastbuf[4] = (lastbuf[4] & 0x7F) | 0x80; /* set end flag, preserve rate extension bits */
-    lastbuf[5] = 0;
+    /* lastbuf[5] (wire_layout) is preserved; it is only meaningful for 24-bit PCM. */
 
     iov.iov_base = lastbuf;
 
