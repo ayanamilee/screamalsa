@@ -2,8 +2,10 @@
 
 static pcap_t *handle;
 static int (*pcap_output_callback)(receiver_data_t* receiver_data);
+static int pcap_legacy_mode = 0;
 
-int init_pcap(const char* interface_name, int port, char* multicast_group) {
+int init_pcap(const char* interface_name, int port, char* multicast_group, int legacy) {
+  pcap_legacy_mode = legacy;
   struct bpf_program fp;             /* The compiled filter expression */
   bpf_u_int32 mask;                  /* The netmask of our sniffing device */
   bpf_u_int32 net;                   /* The IP of our sniffing device */
@@ -38,6 +40,7 @@ int init_pcap(const char* interface_name, int port, char* multicast_group) {
     fprintf(stderr, "libpcap install filter %s: %s\n", filter_exp, pcap_geterr(handle));
     return 4;
   }
+  return 0;
 }
 
 void pcap_callback(u_char *args, const struct pcap_pkthdr *header, const u_char *pkg)
@@ -79,25 +82,42 @@ void pcap_callback(u_char *args, const struct pcap_pkthdr *header, const u_char 
   }
 
   receiver_data_t receiver_data = {0};
-  if (size_payload < HEADER_SIZE) {
-    fprintf(stderr, "WARN: received packet shorter than %d\n", HEADER_SIZE);
+  const size_t hdr_size = pcap_legacy_mode ? 5 : HEADER_SIZE;
+  if (size_payload < (int)hdr_size) {
+    fprintf(stderr, "WARN: received packet shorter than %zu\n", hdr_size);
     return;
   }
 
-  unsigned char b0 = payload[0];
-  unsigned char b1 = payload[1];
-  unsigned char b2 = payload[2];
-  unsigned char b3 = payload[3];
-  unsigned char b4 = payload[4];
-  unsigned char b5 = payload[5];
+  if (pcap_legacy_mode) {
+    unsigned char b0 = payload[0];
+    unsigned char b1 = payload[1];
+    unsigned char b2 = payload[2];
+    unsigned char b3 = payload[3];
+    unsigned char b4 = payload[4];
 
-  receiver_data.format.sample_rate = scream_decode_rate(b0, b4);
-  receiver_data.format.sample_size = b1;
-  receiver_data.format.channels = b2;
-  receiver_data.format.channel_map = b3;
-  receiver_data.format.wire_layout = b5;
-  receiver_data.audio_size = size_payload - HEADER_SIZE;
-  receiver_data.audio = &payload[HEADER_SIZE];
+    receiver_data.format.sample_rate = scream_decode_rate_legacy(b0);
+    receiver_data.format.sample_size = b1;
+    receiver_data.format.channels = b2;
+    receiver_data.format.channel_map = b3 | ((uint16_t)b4 << 8);
+    receiver_data.format.wire_layout = 0;
+    receiver_data.audio_size = size_payload - 5;
+    receiver_data.audio = &payload[5];
+  } else {
+    unsigned char b0 = payload[0];
+    unsigned char b1 = payload[1];
+    unsigned char b2 = payload[2];
+    unsigned char b3 = payload[3];
+    unsigned char b4 = payload[4];
+    unsigned char b5 = payload[5];
+
+    receiver_data.format.sample_rate = scream_decode_rate(b0, b4);
+    receiver_data.format.sample_size = b1;
+    receiver_data.format.channels = b2;
+    receiver_data.format.channel_map = b3;
+    receiver_data.format.wire_layout = b5;
+    receiver_data.audio_size = size_payload - HEADER_SIZE;
+    receiver_data.audio = &payload[HEADER_SIZE];
+  }
 
   int ret = pcap_output_callback(&receiver_data);
   if (ret != 0) {

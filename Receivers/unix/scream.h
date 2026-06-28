@@ -54,6 +54,18 @@ static inline uint32_t scream_decode_rate(unsigned char b0, unsigned char b4)
   return (uint32_t)base * mult;
 }
 
+/* Decode rate from original 5-byte Scream header byte[0].
+ * Original encoding: values >= 128 mean 44100 * (value - 128),
+ * otherwise 48000 * value.
+ */
+static inline uint32_t scream_decode_rate_legacy(unsigned char b0)
+{
+  if (b0 >= 128) {
+    return 44100U * (b0 - 128);
+  }
+  return 48000U * b0;
+}
+
 static inline int scream_is_end_of_track(unsigned char b4)
 {
   return (b4 & 0x80) != 0;

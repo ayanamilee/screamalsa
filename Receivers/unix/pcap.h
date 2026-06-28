@@ -44,7 +44,7 @@ struct sniff_udp {
     u_short uh_sum;                 /* udp checksum */
 };
 
-int init_pcap(const char* interface_name, int port, char* multicast_group);
+int init_pcap(const char* interface_name, int port, char* multicast_group, int legacy);
 
 int run_pcap(int (*output_function)(receiver_data_t*));
 

@@ -72,6 +72,8 @@ static void show_usage(const char *arg0)
   fprintf(stderr, "         -l <latency>                 : Max latency in milliseconds. Defaults to 200ms.\n");
   fprintf(stderr, "                                        Only relevant for PulseAudio output.\n");
   fprintf(stderr, "         -c                           : Do not connect jack ports.\n");
+  fprintf(stderr, "         -L                           : Legacy mode: use original 5-byte Scream header\n");
+  fprintf(stderr, "                                        (for original screamalsa driver / ap2renderer).\n");
   fprintf(stderr, "\n");
   fprintf(stderr, "         -v                           : Be verbose.\n");
   fprintf(stderr, "\n");
@@ -158,9 +160,10 @@ int main(int argc, char*argv[]) {
   in_addr_t interface        = INADDR_ANY;
   uint16_t port              = DEFAULT_PORT;
   int jack_connect           = 1;
+  int legacy_mode            = 0;
   int opt;
   
-  while ((opt = getopt(argc, argv, "i:g:p:m:x:o:d:s:n:t:l:Puvhc")) != -1) {
+  while ((opt = getopt(argc, argv, "i:g:p:m:x:o:d:s:n:t:l:PuL vhc")) != -1) {
     switch (opt) {
     case 'i':
       interface_name = strdup(optarg);
@@ -181,6 +184,9 @@ int main(int argc, char*argv[]) {
     case 'm':
       receiver_mode = SharedMem;
       ivshmem_device = strdup(optarg);
+      break;
+    case 'L':
+      legacy_mode = 1;
       break;
     case 'o':
       output = strdup(optarg);
@@ -306,7 +312,7 @@ int main(int argc, char*argv[]) {
       break;
     case Pcap:
 #if PCAP_ENABLE
-      res = init_pcap(interface_name, port, multicast_group);
+      res = init_pcap(interface_name, port, multicast_group, legacy_mode);
       return res == 0 ? run_pcap(output_send_fn) : res;
 #else
       fprintf(stderr, "%s compiled without libpcap support. Aborting", argv[0]);
@@ -316,7 +322,7 @@ int main(int argc, char*argv[]) {
     case Multicast:
     default:
       if (verbosity) fprintf(stderr, "Starting %s receiver\n", receiver_mode == Unicast ? "unicast" : "multicast");
-      if (init_network(receiver_mode, interface, port, multicast_group) != 0) {
+      if (init_network(receiver_mode, interface, port, multicast_group, legacy_mode) != 0) {
         return 1;
       }
       receiver_rcv_fn = rcv_network;
