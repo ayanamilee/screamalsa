@@ -18,8 +18,27 @@ Receivers
   Build: cd Receivers/unix && mkdir -p build && cd build && cmake .. && make
   Run with ScreamALSA defaults: ./Receivers/unix/screamalsa.sh -v
   (UDP unicast, port 4011, ALSA output)
+  Legacy mode (original 5-byte Scream header): ./scream -u -p 4011 -o alsa -d plughw:1,0 -L -v
+  Use legacy mode for the original screamalsa driver, ap2renderer, or any sender that uses
+  the original 5-byte Scream protocol. Legacy mode also deinterleaves DSD frames to match
+  standard ALSA DSD_U32_BE order.
 - Additional receivers for other platforms are available in the archive:
   https://albumplayer.ru/asioscream4.zip
+
+Command-line options (Unix receiver)
+- -u                       : Use unicast instead of multicast.
+- -p <port>                : UDP port (default 4010 for multicast, often 4011 for unicast).
+- -i <iface>               : Bind to interface by name or IP.
+- -g <group>               : Multicast group address (default 239.255.77.77).
+- -o pulse|alsa|jack|sndio|raw : Audio output backend.
+- -d <device>              : ALSA/sndio device name.
+- -s <sink>                : PulseAudio sink name.
+- -n <name>                : PulseAudio stream name / JACK client name.
+- -t <latency>             : Target latency in milliseconds (default 50).
+- -l <latency>             : Max latency for PulseAudio (default 200).
+- -c                       : Do not auto-connect JACK ports.
+- -L                       : Legacy mode: parse original 5-byte Scream header.
+- -v                       : Verbose output (repeat for more detail).
 
 Scream Scripts - Quick Guide
 
