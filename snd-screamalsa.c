@@ -64,7 +64,7 @@
 #endif
 
 MODULE_AUTHOR("I.Antonov igor63r@gmail.com");
-MODULE_VERSION("2.0.0");
+MODULE_VERSION("2.0.4");
 
 MODULE_DESCRIPTION("ALSA driver to stream high-rate PCM/DSD over TCP/UDP (Scream protocol)");
 MODULE_LICENSE("GPL v2");
@@ -138,7 +138,8 @@ static const u8 ch_mask[] = {0, 1, 3, 7, 15, 31, 63, 127, 255};
 
 #define SCREAM_INFO_FLAGS (SNDRV_PCM_INFO_INTERLEAVED | \
                            SNDRV_PCM_INFO_MMAP | \
-                           SNDRV_PCM_INFO_MMAP_VALID)
+                           SNDRV_PCM_INFO_MMAP_VALID | \
+                           SNDRV_PCM_INFO_PAUSE)
 
 /* HR timer logic removed, using kthread sleep instead */
 
@@ -539,16 +540,20 @@ static int scream_playback_thread(void *data)
         }
 
         rt = sub->runtime;
+        if (!dev->frame_bytes) {
+            spin_unlock_irqrestore(&dev->lock, flags);
+            usleep_range(1000, 2000);
+            continue;
+        }
         avail_fr = snd_pcm_playback_hw_avail(rt);
         if (avail_fr < 0) avail_fr = 0;
 
         if (avail_fr * dev->frame_bytes >= SCREAM_PAYLOAD_SIZE) {
             size_t buf_bytes = rt->buffer_size * dev->frame_bytes;
-            
+
             scream_build_payload_locked(dev, rt, dev->hw_ptr,
                                         dev->network_buffer + SCREAM_HEADER_SIZE);
             dev->hw_ptr = (dev->hw_ptr + SCREAM_PAYLOAD_SIZE) % buf_bytes;
-            
             do_send = true;
         }
         spin_unlock_irqrestore(&dev->lock, flags);
@@ -579,22 +584,18 @@ static int scream_playback_thread(void *data)
                     }
                 }
             }
-            
-            /* Handle ALSA period elapsed natively */
+
             dev->bytes_in_period += SCREAM_PAYLOAD_SIZE;
             if (dev->bytes_in_period >= dev->alsa_period_bytes) {
                 dev->bytes_in_period -= dev->alsa_period_bytes;
                 snd_pcm_period_elapsed(sub);
             }
 
-            /* Wait precisely for the next packet interval */
             if (is_first_packet) {
                 next_wake = ktime_get();
                 is_first_packet = false;
             } else {
                 next_wake = ktime_add(next_wake, dev->period_time_ns);
-                
-                /* Catch up if we are severely behind */
                 if (ktime_compare(ktime_get(), next_wake) > 0) {
                      next_wake = ktime_get();
                 } else {
@@ -602,13 +603,24 @@ static int scream_playback_thread(void *data)
                      schedule_hrtimeout(&next_wake, HRTIMER_MODE_ABS);
                 }
             }
-
         } else {
-            /* No data available, sleep lightly to avoid CPU burn */
             usleep_range(200, 500);
-            next_wake = ktime_get(); /* reset timeline after underrun */
+            next_wake = ktime_get();
         }
     }
+    }
+    return 0;
+}
+
+static int scream_ensure_playback_thread(struct snd_scream_device *dev)
+{
+    if (dev->playback_thread)
+        return 0;
+    dev->playback_thread = kthread_run(scream_playback_thread, dev, "scream_tx");
+    if (IS_ERR(dev->playback_thread)) {
+        pr_err(DRIVER_NAME ": Failed to create playback thread\n");
+        dev->playback_thread = NULL;
+        return -ENOMEM;
     }
     return 0;
 }
@@ -629,11 +641,12 @@ static int snd_scream_pcm_open(struct snd_pcm_substream *substream)
 
     /* Reuse existing socket for seamless track switching */
     if (dev->sock) {
-        if (dev->is_tcp &&
-            atomic_read(&dev->connection_state) != STATE_DISCONNECTED)
-            return 0;  /* TCP connected/connecting - reuse */
-        if (!dev->is_tcp)
-            return 0;  /* UDP - always reuse */
+        if ((dev->is_tcp &&
+             atomic_read(&dev->connection_state) != STATE_DISCONNECTED) ||
+            !dev->is_tcp) {
+            /* close() may have stopped the kthread while leaving the socket */
+            return scream_ensure_playback_thread(dev);
+        }
 
         /* TCP disconnected - clean up stale socket */
         atomic_set(&dev->closing, 1);
@@ -672,16 +685,7 @@ static int snd_scream_pcm_open(struct snd_pcm_substream *substream)
         atomic_set(&dev->connection_state, STATE_CONNECTED);
     }
 
-    if (!dev->playback_thread) {
-        dev->playback_thread = kthread_run(scream_playback_thread, dev, "scream_tx");
-        if (IS_ERR(dev->playback_thread)) {
-            pr_err(DRIVER_NAME ": Failed to create playback thread\n");
-            dev->playback_thread = NULL;
-            return -ENOMEM;
-        }
-    }
-
-    return 0;
+    return scream_ensure_playback_thread(dev);
 }
 
 static int snd_scream_pcm_close(struct snd_pcm_substream *substream)
@@ -797,6 +801,10 @@ static int snd_scream_pcm_prepare(struct snd_pcm_substream *substream)
     struct snd_scream_device *dev = snd_pcm_substream_chip(substream);
     dev->hw_ptr = 0;
     substream->runtime->start_threshold = substream->runtime->period_size;
+    /* Allow XRUN when the client drains (Spotify track gap / seek). PipeWire
+     * recovers with prepare+start — the same path that already restores
+     * audio when the user scrubs the timeline. Do not invent silence: that
+     * runs hw_ptr past appl_ptr and the next track is never heard. */
     substream->runtime->stop_threshold = substream->runtime->buffer_size;
     return 0;
 }
@@ -808,6 +816,10 @@ static int snd_scream_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 
     switch (cmd) {
     case SNDRV_PCM_TRIGGER_START:
+    case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+#ifdef SNDRV_PCM_TRIGGER_RESUME
+    case SNDRV_PCM_TRIGGER_RESUME:
+#endif
         spin_lock_irqsave(&dev->lock, flags);
         if (!dev->is_running) {
             dev->is_running = true;
@@ -816,6 +828,10 @@ static int snd_scream_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
         spin_unlock_irqrestore(&dev->lock, flags);
         break;
     case SNDRV_PCM_TRIGGER_STOP:
+    case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+#ifdef SNDRV_PCM_TRIGGER_SUSPEND
+    case SNDRV_PCM_TRIGGER_SUSPEND:
+#endif
         spin_lock_irqsave(&dev->lock, flags);
         if (dev->is_running) {
             dev->is_running = false;

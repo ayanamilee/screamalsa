@@ -6,6 +6,33 @@ Key features
 - Virtual ALSA audio device backed by a network transport
 - Extended Scream protocol with 6-byte header, stereo-only PCM 16/24/32-bit, and DSD support
 - Multi-distro build and install helpers for common Linux distributions
+- Module 2.0.4: PipeWire-friendly PCM (PAUSE, keep playback kthread on socket reuse)
+
+Driver 2.0.4 (PipeWire clients, e.g. Spotify Soloist)
+- Symptom: first track OK; next track silent (receiver may still see a PCM stream of zeros,
+  or idle if the sender stops). Direct ALSA clients (MPD, CamillaDSP, shairport-sync) were fine.
+  Seeking in the Spotify app restored sound until the following track change.
+- Cause: spa-alsa vs this virtual card. A short write gap at track boundaries could
+  TRIGGER_STOP / XRUN; injecting silence while RUNNING ran hw_ptr past appl_ptr so the
+  next track was never heard. Do not send fake silence on underrun.
+- Module changes (snd-screamalsa.c, MODULE_VERSION 2.0.4):
+  * SNDRV_PCM_INFO_PAUSE plus TRIGGER_PAUSE_PUSH / PAUSE_RELEASE (and SUSPEND/RESUME)
+  * open() reuses the UDP/TCP socket but restarts the scream_tx kthread if close() stopped it
+  * stop_threshold = buffer_size (allow XRUN; PipeWire recovers with prepare+start, same path as seek)
+  * only packetize real ALSA data; no silence fill
+- Rebuild on the machine that loads the module (kernel headers must match uname -r):
+    cd /home/audiolinux/screamalsa && sudo make && sudo make install
+    sudo rmmod snd_screamalsa
+    sudo insmod /lib/modules/$(uname -r)/extra/snd-screamalsa.ko \
+        ip_addr_str=<receiver> protocol_str=udp port=4011
+  Check: modinfo snd-screamalsa | grep ^version   → 2.0.4
+- Isolated PipeWire sink used with this driver should keep the device open and use a
+  ~1.5 s buffer (see streamtx spotify-soloist/install.sh 10-spotify-sink.conf):
+    session.suspend-timeout-seconds = 0
+    node.pause-on-idle = false
+    api.alsa.headroom = 2048
+    api.alsa.period-size = 2048
+    api.alsa.period-num = 32
 
 Protocol notes
 - Header byte[5] (wire_layout) only for 24-bit PCM (0=packed S24_3LE 3B, 1=S24_LE 4B container).
@@ -24,6 +51,25 @@ Receivers
   standard ALSA DSD_U32_BE order.
 - Additional receivers for other platforms are available in the archive:
   https://albumplayer.ru/asioscream4.zip
+
+macOS virtual sound card
+- macos/ contains ScreamAudio, a Core Audio HAL plug-in that appears as "Scream (Exclusive)"
+  (hog / integer mode, like ALSA hw:) or "Scream (Network)" if EXCLUSIVE=0.
+  It streams the same 6-byte ScreamALSA protocol over UDP/TCP. PCM 16/24/32-bit stereo is
+  supported; DSD is not (Core Audio has no DSD path).
+  Build:  cd macos && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+  Install: sudo ./macos/install.sh
+  Config:  macos/scream.conf  then  sudo screamctl apply
+  HEADER=original speaks the upstream 5-byte igor63r/screamalsa protocol;
+  HEADER=extended (default) is this fork's 6-byte header.
+
+Windows ASIO sender
+- windows/asioscreamalsa/ is a GPL-2 ASIO driver that applies the same protocol
+  as this fork (6-byte header, optional HEADER=original for stock asioscream 4).
+  The asioscream4/ folder is the original closed-source Album Player bundle
+  (no source); use ASIO ScreamALSA instead of ASIO Scream 4.
+  Build on Windows: see windows/asioscreamalsa/README.md
+  See macos/README.md for formats, rates, and limitations.
 
 Command-line options (Unix receiver)
 - -u                       : Use unicast instead of multicast.
