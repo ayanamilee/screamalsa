@@ -5,8 +5,45 @@ This repository contains a Linux kernel module `snd-screamalsa.c` and helper scr
 Key features
 - Virtual ALSA audio device backed by a network transport
 - Extended Scream protocol with 6-byte header, stereo-only PCM 16/24/32-bit, and DSD support
+- One module, two wire dialects via header_str (extended 6-byte or original 5-byte)
+- Live ip_addr_str / port / header_str (next packet; no rmmod to switch)
 - Multi-distro build and install helpers for common Linux distributions
+- Module 2.0.7: original header is S32_LE (+ DSD) only, matching igor63r/apscream
+- Module 2.0.6: live ip_addr_str/port applied on the next packet (no rmmod)
+- Module 2.0.5: header_str=extended|original live switch (one .ko, 6-byte or 5-byte wire)
 - Module 2.0.4: PipeWire-friendly PCM (PAUSE, keep playback kthread on socket reuse)
+
+Driver 2.0.7 (header_str + live endpoint; original dialect = igor63r/apscream)
+- One .ko. Do not ship a second "legacy" module. Switch dialect with header_str:
+    header_str=extended  (default)  6-byte fork header, PCM 16/24/32 + DSD
+    header_str=original  (or legacy) 5-byte igor63r header, PCM S32_LE + DSD
+  Pair original with scream -L / scream2diretta --legacy / apscream.
+  Pair extended with this tree's Unix receiver (no -L) or s2d without --legacy.
+- Live sysfs (0644), same as ip_addr_str. Next packet uses the new dialect
+  or destination; do not rmmod to switch header or Receiver IP.
+    echo original > /sys/module/snd_screamalsa/parameters/header_str
+    echo 172.20.0.2 > /sys/module/snd_screamalsa/parameters/ip_addr_str
+  Persist in /etc/modprobe.d/screamalsa.conf:
+    options snd-screamalsa ip_addr_str=... port=4011 protocol_str=udp header_str=extended
+  scream.conf HEADER=extended|original is applied by scream_config.sh.
+- 2.0.5 added header_str. 2.0.6 made ip_addr_str/port take effect per packet
+  (UDP send used the sockaddr from the first open(); Apply IP then switch
+  back left packets going to the old address).
+- 2.0.7: original 5-byte header has no wire_layout byte. igor63r advertised
+  only S32_LE (+ DSD); apscream and scream -L treat PCM as 32-bit. Advertising
+  S16/S24 in original mode made MPD (auto_format no) open 16/24-bit, which
+  both apscream and s2d --legacy played as noise. Original dialect now:
+    * ALSA hw: S32_LE + DSD_U32_BE only (16/24 stay on extended)
+    * header byte[1] = 32 for PCM, 1 for DSD
+    * DSD still uses convert_data() byte shuffle so -L can deinterleave
+  After switching header_str, reopen the PCM (stop/start the player) so
+  ALSA renegotiates S32.
+- Rebuild on the machine that loads the module (only when replacing the .ko):
+    cd /home/audiolinux/screamalsa && sudo make && sudo make install
+    sudo rmmod snd_screamalsa
+    sudo modprobe snd-screamalsa
+  Check: modinfo snd-screamalsa | grep ^version   → 2.0.7
+          cat /sys/module/snd_screamalsa/parameters/header_str
 
 Driver 2.0.4 (PipeWire clients, e.g. Spotify Soloist)
 - Symptom: first track OK; next track silent (receiver may still see a PCM stream of zeros,
@@ -35,10 +72,17 @@ Driver 2.0.4 (PipeWire clients, e.g. Spotify Soloist)
     api.alsa.period-num = 32
 
 Protocol notes
-- Header byte[5] (wire_layout) only for 24-bit PCM (0=packed S24_3LE 3B, 1=S24_LE 4B container).
-- Rate encoding extended using byte[0] + bits in byte[4] to support DSD rates up to DSD512. (DSD1024+ limited by fixed payload and scheduling.)
+- header_str=extended (default): 6-byte header. byte[5] (wire_layout) only for
+  24-bit PCM (0=packed S24_3LE 3B, 1=S24_LE 4B container). Rate encoding uses
+  byte[0] + bits in byte[4] (DSD up to DSD512). DSD is standard ALSA DSD_U32_BE
+  frame order (no convert_data shuffle).
+- header_str=original: 5-byte igor63r header. PCM is S32_LE only (byte[1]=32).
+  DSD (byte[1]=1) uses convert_data() interleave. Rate is the original 8-bit
+  code in byte[0] ( >=128 → 44100*(v-128), else 48000*v ). byte[4] is 0 while
+  playing, 0x80 at end-of-track. No byte[5].
 - Receivers should ignore wire_layout for non-24 and DSD (byte[1]==1).
-- ALSA receiver supports full PCM 16/24/32 + DSD; Pulse receiver has 24-bit wire_layout fix (S24_32LE vs S24LE).
+- ALSA receiver supports full PCM 16/24/32 + DSD in extended mode; use -L for
+  original. Pulse receiver has 24-bit wire_layout fix (S24_32LE vs S24LE).
 
 Receivers
 - Unix/Linux receiver (ALSA, PulseAudio, JACK, etc.) is included in this repository under Receivers/unix/.
@@ -62,6 +106,12 @@ macOS virtual sound card
   Config:  macos/scream.conf  then  sudo screamctl apply
   HEADER=original speaks the upstream 5-byte igor63r/screamalsa protocol;
   HEADER=extended (default) is this fork's 6-byte header.
+
+Windows Apple Music sender (AMScream)
+- windows/amscream/ is AMExclusive plus a Scream exclusive backend. Turning on
+  Exclusive mode in Apple Music sends Scream (6-byte extended or 5-byte original)
+  to the receiver in am-exclusive.ini; the Windows default device is not hogged.
+  Build on Windows x64: see windows/amscream/README.md
 
 Windows ASIO sender
 - windows/asioscreamalsa/ is a GPL-2 ASIO driver that applies the same protocol

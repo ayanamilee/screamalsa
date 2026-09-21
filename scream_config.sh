@@ -18,11 +18,22 @@ if ! lsmod | grep -q "$MODULE"; then
 fi
 
 # Write values to the module parameters via sysfs
+HEADER="${HEADER:-extended}"
+case "$HEADER" in
+    original|legacy) HEADER=original ;;
+    *) HEADER=extended ;;
+esac
 echo "$IP" > "/sys/module/$MODULE/parameters/ip_addr_str"
 echo "$PORT" > "/sys/module/$MODULE/parameters/port"
 echo "$PROTOCOL" > "/sys/module/$MODULE/parameters/protocol_str"
-echo "options snd-screamalsa ip_addr_str=$IP  port=$PORT protocol_str=$PROTOCOL" > /etc/modprobe.d/screamalsa.conf
+if [[ -w /sys/module/$MODULE/parameters/header_str ]]; then
+    echo "$HEADER" > "/sys/module/$MODULE/parameters/header_str"
+fi
+echo "options snd-screamalsa ip_addr_str=$IP  port=$PORT protocol_str=$PROTOCOL header_str=$HEADER" > /etc/modprobe.d/screamalsa.conf
 echo "Scream configuration successfully applied:"
 echo "  IP: $(cat /sys/module/$MODULE/parameters/ip_addr_str)"
 echo "  Port: $(cat /sys/module/$MODULE/parameters/port)"
 echo "  Protocol: $(cat /sys/module/$MODULE/parameters/protocol_str)"
+if [[ -r /sys/module/$MODULE/parameters/header_str ]]; then
+    echo "  Header: $(cat /sys/module/$MODULE/parameters/header_str)"
+fi

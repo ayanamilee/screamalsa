@@ -64,7 +64,7 @@
 #endif
 
 MODULE_AUTHOR("I.Antonov igor63r@gmail.com");
-MODULE_VERSION("2.0.4");
+MODULE_VERSION("2.0.7");
 
 MODULE_DESCRIPTION("ALSA driver to stream high-rate PCM/DSD over TCP/UDP (Scream protocol)");
 MODULE_LICENSE("GPL v2");
@@ -90,12 +90,25 @@ static int port = 4011;
 module_param(port, int, 0644);
 MODULE_PARM_DESC(port, "Target port");
 
+/* Wire header dialect. Live-writable; next packet uses the new size/layout.
+ * extended (default): 6-byte fork header (rate extension + wire_layout).
+ * original / legacy:  5-byte igor63r/screamalsa header (scream -L / s2d --legacy).
+ */
+static char header_str[16] = "extended";
+module_param_string(header_str, header_str, sizeof(header_str), 0644);
+MODULE_PARM_DESC(header_str, "Wire header: 'extended' (6-byte) or 'original'/'legacy' (5-byte)");
+
 #define DRIVER_NAME "ScreamALSA"
 static struct snd_card *scream_card_ptr = NULL;
 static struct platform_device *scream_pdev = NULL;
 static const u8 ch_mask[] = {0, 1, 3, 7, 15, 31, 63, 127, 255};
 /*
- * ScreamALSA extended protocol header (6 bytes)
+ * ScreamALSA protocol header
+ *
+ * header_str=extended (default): 6 bytes, this fork.
+ * header_str=original|legacy:    5 bytes, igor63r/screamalsa (scream -L).
+ *
+ * Extended (6 bytes)
  *
  * byte[0] : rate mult low 8 bits (mult & 0xff)
  * byte[1] : sample size / format marker
@@ -124,8 +137,10 @@ static const u8 ch_mask[] = {0, 1, 3, 7, 15, 31, 63, 127, 255};
  * Receiver (ALSA) decodes full rate and *2 for DSD.
  */
 #define SCREAM_PAYLOAD_SIZE 1152
-#define SCREAM_HEADER_SIZE 6
-#define SCREAM_PACKET_SIZE (SCREAM_HEADER_SIZE + SCREAM_PAYLOAD_SIZE)
+#define SCREAM_HEADER_SIZE_EXTENDED 6
+#define SCREAM_HEADER_SIZE_ORIGINAL 5
+#define SCREAM_HEADER_SIZE_MAX SCREAM_HEADER_SIZE_EXTENDED
+#define SCREAM_PACKET_SIZE_MAX (SCREAM_HEADER_SIZE_MAX + SCREAM_PAYLOAD_SIZE)
 
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
@@ -158,7 +173,7 @@ struct snd_scream_device {
     ktime_t period_time_ns;
     size_t hw_ptr;          /* in bytes */
     bool is_running;
-    u8 network_buffer[SCREAM_PACKET_SIZE];
+    u8 network_buffer[SCREAM_PACKET_SIZE_MAX];
 
     unsigned int sample_rate;
     unsigned int channels;
@@ -231,6 +246,127 @@ static u8 scream_pcm_wire_layout(snd_pcm_format_t format)
     if (format == SNDRV_PCM_FORMAT_S24_LE)
         return SCREAM_WIRE_S24_LE;
     return SCREAM_WIRE_PACKED;
+}
+
+static bool scream_header_original(void)
+{
+    return sysfs_streq(header_str, "original") || sysfs_streq(header_str, "legacy");
+}
+
+static unsigned int scream_hdr_size(void)
+{
+    return scream_header_original() ? SCREAM_HEADER_SIZE_ORIGINAL
+                                    : SCREAM_HEADER_SIZE_EXTENDED;
+}
+
+static unsigned int scream_pkt_size(void)
+{
+    return scream_hdr_size() + SCREAM_PAYLOAD_SIZE;
+}
+
+/* igor63r/screamalsa advertised only S32_LE (+ DSD). Original 5-byte header
+ * has no wire_layout byte, and apscream / scream -L treat PCM as 32-bit.
+ * Keep 16/24-bit only for the extended 6-byte dialect.
+ */
+static void scream_apply_hw_caps(struct snd_pcm_runtime *runtime)
+{
+    runtime->hw = snd_scream_hw;
+    if (!scream_header_original())
+        return;
+    runtime->hw.formats = SNDRV_PCM_FMTBIT_S32_LE;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
+#ifdef SNDRV_PCM_FMTBIT_DSD_U32_BE
+    runtime->hw.formats |= SNDRV_PCM_FMTBIT_DSD_U32_BE;
+#endif
+#endif
+}
+
+/* Apply live ip_addr_str/port (sysfs / modprobe.d) to the send destination.
+ * UDP uses msg_name per packet, so this is enough. TCP must reconnect.
+ * Returns true if the destination changed.
+ */
+static bool scream_refresh_endpoint(struct snd_scream_device *dev)
+{
+    struct sockaddr_in neu;
+    bool changed;
+
+    memset(&neu, 0, sizeof(neu));
+    neu.sin_family = AF_INET;
+    neu.sin_port = htons(port);
+    neu.sin_addr.s_addr = in_aton(ip_addr_str);
+
+    changed = (dev->remote_addr.sin_family != AF_INET) ||
+              (dev->remote_addr.sin_addr.s_addr != neu.sin_addr.s_addr) ||
+              (dev->remote_addr.sin_port != neu.sin_port);
+    if (changed)
+        dev->remote_addr = neu;
+
+    if (changed && dev->is_tcp && dev->sock && !atomic_read(&dev->closing)) {
+        if (atomic_read(&dev->connection_state) != STATE_DISCONNECTED) {
+            atomic_set(&dev->connection_state, STATE_DISCONNECTED);
+            schedule_delayed_work(&dev->reconnect_work, msecs_to_jiffies(50));
+        }
+    }
+    return changed;
+}
+
+/* Original screamalsa convert_data(): ALSA DSD_U32_BE stereo frame
+ * [L0 L1 L2 L3 R0 R1 R2 R3] -> wire [L0 R0 L1 R1 L2 R2 L3 R3].
+ * Extended dialect sends ALSA order unchanged.
+ */
+static void scream_dsd_legacy_interleave(char *src, int frames)
+{
+    int i = 0;
+    char src1, src2;
+
+    while (i++ < frames) {
+        src1 = src[1];
+        src[1] = src[4];
+        src2 = src[2];
+        src[2] = src1;
+        src1 = src[3];
+        src[3] = src[5];
+        src[4] = src2;
+        src[5] = src[6];
+        src[6] = src1;
+        src += 8;
+    }
+}
+
+static void scream_fill_header(struct snd_scream_device *dev, u8 *out, bool eot)
+{
+    unsigned int srt = dev->is_dsd ? (dev->sample_rate / 2) : dev->sample_rate;
+    unsigned int ch = dev->channels ? dev->channels : 2;
+
+    out[2] = (u8)ch;
+    out[3] = (ch < ARRAY_SIZE(ch_mask)) ? ch_mask[ch] : 0;
+
+    if (scream_header_original()) {
+        /* Match igor63r: PCM sample_size is always 32; DSD is 1.
+         * 5-byte header cannot carry wire_layout for 16/24-bit. */
+        out[1] = dev->is_dsd ? 1 : 32;
+        /* igor63r 5-byte: byte[0] >= 128 → 44100*(v-128), else 48000*v.
+         * byte[4] is 0 while playing, 0x80 at end-of-track. */
+        if (srt % 44100U)
+            out[0] = (u8)(srt / 48000U);
+        else
+            out[0] = (u8)(128U + srt / 44100U);
+        out[4] = eot ? 0x80 : 0;
+        return;
+    }
+
+    out[1] = dev->is_dsd ? 1 : scream_pcm_wire_bits(dev->format);
+
+    {
+        unsigned int base = (srt % 44100U == 0) ? 44100U : 48000U;
+        unsigned int mult = base ? (srt / base) : 0;
+
+        out[0] = (u8)(mult & 0xff);
+        out[4] = (u8)(((mult >> 8) & 0x0f) |
+                      ((base == 44100U) ? 0x10 : 0x00) |
+                      (eot ? 0x80 : 0x00));
+        out[5] = dev->is_dsd ? 0 : scream_pcm_wire_layout(dev->format);
+    }
 }
 
 static inline void set_sock_timeouts(struct socket *sock, unsigned int msec)
@@ -446,29 +582,32 @@ static unsigned int scream_reconnect_delay_ms_for_err(int err)
     }
 }
 
-static u8 lastbuf[SCREAM_HEADER_SIZE + SCREAM_PAYLOAD_SIZE] = {0};
+static u8 lastbuf[SCREAM_PACKET_SIZE_MAX] = {0};
 static int scream_send_last_packet(struct snd_scream_device *dev)
 {
     struct msghdr msg = { .msg_flags = MSG_DONTWAIT | MSG_NOSIGNAL };
     struct kvec iov;
+    unsigned int hdr = scream_hdr_size();
+    unsigned int pkt = scream_pkt_size();
     int ret = 0;
 
-    memcpy(lastbuf, dev->network_buffer, SCREAM_HEADER_SIZE);
-    lastbuf[4] = (lastbuf[4] & 0x7F) | 0x80; /* set end flag, preserve rate extension bits */
-    /* lastbuf[5] (wire_layout) is preserved; it is only meaningful for 24-bit PCM. */
+    scream_fill_header(dev, lastbuf, true);
+    if (pkt > hdr)
+        memcpy(lastbuf + hdr, dev->network_buffer + hdr, SCREAM_PAYLOAD_SIZE);
 
     iov.iov_base = lastbuf;
+    scream_refresh_endpoint(dev);
 
     if (dev->is_tcp) {
         if (atomic_read(&dev->connection_state) != STATE_CONNECTED)
             return -ENOTCONN;
-        iov.iov_len = SCREAM_PACKET_SIZE;
-        ret = kernel_sendmsg(dev->sock, &msg, &iov, 1, SCREAM_PACKET_SIZE);
+        iov.iov_len = pkt;
+        ret = kernel_sendmsg(dev->sock, &msg, &iov, 1, pkt);
     } else {
-        iov.iov_len = SCREAM_HEADER_SIZE;
+        iov.iov_len = hdr;
         msg.msg_name = &dev->remote_addr;
         msg.msg_namelen = sizeof(dev->remote_addr);
-        ret = kernel_sendmsg(dev->sock, &msg, &iov, 1, SCREAM_HEADER_SIZE);
+        ret = kernel_sendmsg(dev->sock, &msg, &iov, 1, hdr);
     }
     return ret;
 }
@@ -487,9 +626,10 @@ static void scream_build_payload_locked(struct snd_scream_device *dev,
     } else {
         memcpy(data, runtime->dma_area + current_hw_ptr, SCREAM_PAYLOAD_SIZE);
     }
-    /* DSD_U32_BE is sent in standard ALSA frame order; the receiver passes
-     * bytes through unchanged. No additional conversion is applied.
-     */
+    /* Extended: DSD_U32_BE in ALSA frame order. Original 5-byte dialect
+     * applies convert_data() so scream -L / s2d --legacy can deinterleave. */
+    if (dev->is_dsd && scream_header_original())
+        scream_dsd_legacy_interleave(data, SCREAM_PAYLOAD_SIZE / 8);
 }
 
 static int scream_playback_thread(void *data)
@@ -550,24 +690,28 @@ static int scream_playback_thread(void *data)
 
         if (avail_fr * dev->frame_bytes >= SCREAM_PAYLOAD_SIZE) {
             size_t buf_bytes = rt->buffer_size * dev->frame_bytes;
+            unsigned int hdr = scream_hdr_size();
 
+            scream_fill_header(dev, dev->network_buffer, false);
             scream_build_payload_locked(dev, rt, dev->hw_ptr,
-                                        dev->network_buffer + SCREAM_HEADER_SIZE);
+                                        dev->network_buffer + hdr);
             dev->hw_ptr = (dev->hw_ptr + SCREAM_PAYLOAD_SIZE) % buf_bytes;
             do_send = true;
         }
         spin_unlock_irqrestore(&dev->lock, flags);
 
         if (do_send) {
+            scream_refresh_endpoint(dev);
             if (!dev->is_tcp || atomic_read(&dev->connection_state) == STATE_CONNECTED) {
+                unsigned int pkt = scream_pkt_size();
                 struct msghdr msg = { .msg_flags = MSG_DONTWAIT | MSG_NOSIGNAL };
-                struct kvec iov = { .iov_base = dev->network_buffer, .iov_len = SCREAM_PACKET_SIZE };
+                struct kvec iov = { .iov_base = dev->network_buffer, .iov_len = pkt };
                 int ret;
                 if (!dev->is_tcp) {
                     msg.msg_name = &dev->remote_addr;
                     msg.msg_namelen = sizeof(dev->remote_addr);
                 }
-                ret = kernel_sendmsg(dev->sock, &msg, &iov, 1, SCREAM_PACKET_SIZE);
+                ret = kernel_sendmsg(dev->sock, &msg, &iov, 1, pkt);
                 if (ret < 0 && dev->is_tcp) {
                     if (ret != -EAGAIN && ret != -ENOBUFS) {
                         unsigned int delay = scream_reconnect_delay_ms_for_err(ret);
@@ -576,7 +720,7 @@ static int scream_playback_thread(void *data)
                                 schedule_delayed_work(&dev->reconnect_work, msecs_to_jiffies(delay));
                         }
                     }
-                } else if (dev->is_tcp && ret != SCREAM_PACKET_SIZE) {
+                } else if (dev->is_tcp && ret != (int)pkt) {
                     /* Force reconnect on partial send to prevent receiver desync */
                     if (atomic_cmpxchg(&dev->connection_state, STATE_CONNECTED, STATE_DISCONNECTED) == STATE_CONNECTED) {
                         if (!atomic_read(&dev->closing))
@@ -633,7 +777,7 @@ static int snd_scream_pcm_open(struct snd_pcm_substream *substream)
 
     atomic_set(&dev->closing, 0);
     dev->substream = substream;
-    runtime->hw = snd_scream_hw;
+    scream_apply_hw_caps(runtime);
     ret = snd_pcm_hw_constraint_integer(runtime, SNDRV_PCM_HW_PARAM_PERIODS);
     if (ret < 0)
         return ret;
@@ -644,7 +788,9 @@ static int snd_scream_pcm_open(struct snd_pcm_substream *substream)
         if ((dev->is_tcp &&
              atomic_read(&dev->connection_state) != STATE_DISCONNECTED) ||
             !dev->is_tcp) {
-            /* close() may have stopped the kthread while leaving the socket */
+            /* close() may have stopped the kthread while leaving the socket.
+             * Still pick up a live ip_addr_str/port change (Apply IP/port). */
+            scream_refresh_endpoint(dev);
             return scream_ensure_playback_thread(dev);
         }
 
@@ -665,10 +811,7 @@ static int snd_scream_pcm_open(struct snd_pcm_substream *substream)
     if (ret < 0)
         return ret;
 
-    memset(&dev->remote_addr, 0, sizeof(dev->remote_addr));
-    dev->remote_addr.sin_family = AF_INET;
-    dev->remote_addr.sin_port = htons(port);
-    dev->remote_addr.sin_addr.s_addr = in_aton(ip_addr_str);
+    scream_refresh_endpoint(dev);
 
     if (dev->is_tcp) {
         atomic_set(&dev->connection_state, STATE_DISCONNECTED);
@@ -723,7 +866,6 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
 {
     struct snd_scream_device *dev = snd_pcm_substream_chip(substream);
     int ret;
-    unsigned int srt;
 
     ret = snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(params));
     if (ret < 0)
@@ -750,26 +892,15 @@ static int snd_scream_pcm_hw_params(struct snd_pcm_substream *substream, struct 
     dev->is_dsd = false;
 #endif
 
-    /* Scream 6-byte extended header with high-rate support */
-    if (dev->is_dsd) {
-        srt = dev->sample_rate / 2;      /* DSD marker uses sample_rate/2; receiver doubles */
-        dev->network_buffer[1] = 1;      /* DSD marker */
-        dev->network_buffer[5] = 0;
-    } else {
-        srt = dev->sample_rate;
-        dev->network_buffer[1] = scream_pcm_wire_bits(dev->format);
-        dev->network_buffer[5] = scream_pcm_wire_layout(dev->format);
+    if (scream_header_original() && !dev->is_dsd &&
+        dev->format != SNDRV_PCM_FORMAT_S32_LE) {
+        pr_err(DRIVER_NAME ": original header requires S32_LE PCM, got format %d\n",
+               (int)dev->format);
+        snd_pcm_lib_free_pages(substream);
+        return -EINVAL;
     }
 
-    /* New rate encoding for high DSD rates (up to DSD512) */
-    {
-        unsigned int base = (srt % 44100U == 0) ? 44100U : 48000U;
-        unsigned int mult = srt / base;
-        dev->network_buffer[0] = (u8)(mult & 0xff);
-        dev->network_buffer[4] = (u8)(((mult >> 8) & 0x0f) | ((base == 44100U) ? 0x10 : 0x00));
-    }
-    dev->network_buffer[2] = (u8)dev->channels;
-    dev->network_buffer[3] = ch_mask[dev->channels];
+    scream_fill_header(dev, dev->network_buffer, false);
     /* Compute ALSA frame size and verify the fixed 1152-byte payload is an
      * integer number of frames. This keeps packet timing independent of the
      * selected sample format. frame_bytes uses physical_width, so S24_LE
@@ -982,7 +1113,8 @@ static int __init alsa_scream_driver_init(void)
     }
 
     scream_card_ptr = card;
-    pr_info(DRIVER_NAME ": driver loaded successfully.\n");
+    pr_info(DRIVER_NAME ": driver loaded successfully (header=%s).\n",
+            scream_header_original() ? "original" : "extended");
     return 0;
 
 cleanup_dev:

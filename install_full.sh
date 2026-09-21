@@ -220,7 +220,7 @@ install_module() {
     cat > "$modprobe_conf" << EOF
 # ScreamALSA Driver Configuration
 # Automatic loading of ScreamALSA driver
-options snd-screamalsa ip_addr_str=192.168.85.1  port=4011 protocol_str=udp
+options snd-screamalsa ip_addr_str=192.168.85.1  port=4011 protocol_str=udp header_str=extended
 EOF
     
     # Add module to autoload list
